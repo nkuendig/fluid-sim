@@ -1,0 +1,5 @@
+# Internal working notes, drafts and tool settings stay local
+PROJECT.md
+devlog-drafts/
+.claude/
+.DS_Store

@@ -1,0 +1,2290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SPH River — WebGPU</title>
+<style>
+  :root {
+    --bg: #05070d;
+    --panel: rgba(12, 18, 32, 0.82);
+    --line: rgba(120, 170, 230, 0.18);
+    --text: #c9d8ee;
+    --dim: #6f84a3;
+    --accent: #3fb4f0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    overflow: hidden;
+  }
+  #c { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+
+  #ui {
+    position: fixed; top: 14px; right: 14px;
+    width: 268px; padding: 14px 16px 16px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    backdrop-filter: blur(14px);
+    user-select: none;
+  }
+  #ui h1 {
+    margin: 0 0 2px; font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--accent); font-weight: 600;
+  }
+  #ui .sub { margin: 0 0 12px; font-size: 11px; color: var(--dim); }
+  .row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
+  .row label { flex: 0 0 96px; font-size: 11px; color: var(--dim); }
+  .row input[type=range] { flex: 1; min-width: 0; height: 16px; accent-color: var(--accent); }
+  .row output { flex: 0 0 44px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .divider { height: 1px; background: var(--line); margin: 12px 0 10px; }
+  select, button {
+    font: inherit; font-size: 11px; color: var(--text);
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 4px 8px; cursor: pointer;
+  }
+  button:hover, select:hover { background: rgba(63,180,240,0.14); }
+  #stats {
+    display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 11px;
+    font-size: 11px; font-variant-numeric: tabular-nums; color: var(--dim);
+  }
+  #stats b { color: var(--text); font-weight: 600; }
+  .hint { margin-top: 10px; font-size: 10.5px; color: var(--dim); line-height: 1.45; }
+
+  #verify {
+    position: fixed; top: 14px; left: 14px; margin: 0; padding: 14px 16px;
+    display: none; max-width: calc(100vw - 310px); max-height: calc(100vh - 28px); overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    font: inherit; font-size: 11.5px; white-space: pre;
+  }
+
+  #fallback {
+    position: fixed; inset: 0; display: none;
+    align-items: center; justify-content: center; padding: 32px;
+  }
+  #fallback div { max-width: 520px; }
+  #fallback h2 { color: var(--accent); font-size: 14px; letter-spacing: 0.1em; text-transform: uppercase; }
+  #fallback p { color: var(--dim); font-size: 12.5px; }
+  code { color: var(--accent); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <h1>SPH River</h1>
+  <p class="sub">WebGPU compute · 3D · grey box</p>
+
+  <div class="row">
+    <label for="gravity">Gravity</label>
+    <input type="range" id="gravity" min="0" max="30" step="0.5" value="8">
+    <output for="gravity"></output>
+  </div>
+  <div class="row">
+    <label for="pressure">Pressure</label>
+    <input type="range" id="pressure" min="0" max="6000" step="50" value="2000">
+    <output for="pressure"></output>
+  </div>
+  <div class="row">
+    <label for="nearp">Near pressure</label>
+    <input type="range" id="nearp" min="0" max="40" step="1" value="8">
+    <output for="nearp"></output>
+  </div>
+  <div class="row">
+    <label for="visc">Viscosity</label>
+    <input type="range" id="visc" min="0" max="60" step="1" value="20">
+    <output for="visc"></output>
+  </div>
+  <div class="row">
+    <label for="inflow">Inflow</label>
+    <input type="range" id="inflow" min="0" max="4" step="0.1" value="2">
+    <output for="inflow"></output>
+  </div>
+  <div class="row">
+    <label for="smooth">Smoothing</label>
+    <input type="range" id="smooth" min="0" max="6" step="0.5" value="3">
+    <output for="smooth"></output>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="row">
+    <label for="count">Particles</label>
+    <select id="count">
+      <option value="16384">16 384</option>
+      <option value="32768">32 768</option>
+      <option value="65536" selected>65 536</option>
+      <option value="131072">131 072</option>
+    </select>
+    <button id="reset">Reset</button>
+  </div>
+  <div class="row">
+    <label for="mode">View</label>
+    <button id="mode"></button>
+  </div>
+
+  <div id="stats">
+    <span>fps <b id="fps">–</b></span>
+    <span>n <b id="n">–</b></span>
+    <span>in river <b id="active">–</b></span>
+    <span>ms <b id="ms">–</b></span>
+    <span>sub <b id="sub">–</b></span>
+  </div>
+
+  <p class="hint">
+    Left mouse button pushes, right one pulls. <b>Inflow</b> is the speed at
+    the inlet; whatever falls over the edge comes back in there. <b>sub</b>
+    is the number of physics steps per frame. When it turns orange, the
+    maximum is no longer enough and the simulation becomes inaccurate.
+    <b>Smoothing</b> is the filter radius in particle spacings: at 0 you see
+    the individual spheres.
+  </p>
+</div>
+
+<pre id="verify"></pre>
+
+<div id="fallback">
+  <div>
+    <h2>No WebGPU</h2>
+    <p>
+      This browser does not provide <code>navigator.gpu</code>. WebGPU is on by
+      default in Chrome/Edge 144+, Firefox 141+ (Windows, Apple silicon macOS)
+      and Safari 26. On Linux with Firefox it is usually still missing.
+    </p>
+    <p id="fallback-detail"></p>
+  </div>
+</div>
+
+<script type="module">
+const PI = Math.PI;
+const query = new URLSearchParams(location.search);
+
+// ───────────────────────────────────────────────────────────── Scene
+// A grey box with a sloped trough, three stones, an inlet and a drop-off edge.
+// The same numbers are the defaults in cpu_ref.mjs; verify mode passes these
+// in, so GPU and CPU are sure to compute the same scene.
+const SCENE = {
+  boundsMin: [-5.4, -2.4, -1.7],      // grid = the space the particles live in
+  boundsMax: [ 5.4,  1.4,  1.7],
+  slope: 0.1,                         // slope of the terrain plane (tangent of the angle)
+  origin: [-5.0, 0.5],                // point (x, y) on the terrain plane at the upper end
+  troughRadius: 1.6,                  // the trough is a cylinder cut into the terrain
+  troughCenter: 1.0,                  // height of the cylinder axis above the terrain plane
+  blockMin: [-5.3, -2.2, -1.6],       // the block the terrain is clipped to
+  blockMax: [ 4.0,  3.0,  1.6],
+  wallMin: [-5.3, -2.2, -1.6],        // back wall behind the inlet
+  wallMax: [-5.0,  1.1,  1.6],
+  stones: [                           // spheres: x, y, z, radius
+    [-2.0, -0.25, -0.25, 0.42],
+    [ 0.3, -0.45,  0.40, 0.34],
+    [ 2.2, -0.68, -0.30, 0.38],
+  ],
+  inlet: { x: -5.0, yMin: 0.08, yMax: 0.48, zMin: -0.6, zMax: 0.6 },
+  volume: 4.5,                        // nominal volume: it determines the particle spacing
+  sdfEps: 0.01,                       // step size for the gradient
+};
+
+// Smoothing length in particle spacings. In 2D it was 2.8 (about 25 neighbours);
+// in 3D that would be about 92, with 2.0 it is about 34. Change with ?hs= for measurements.
+const H_RATIO = parseFloat(query.get('hs') ?? '2');
+
+// The race in computeForces has been fixed since 14 Nov 2026:
+// all particles read the velocities from before the force step.
+// ?race=1 restores the old behaviour for comparison.
+const VISC_IN_PLACE = query.get('race') === '1';
+
+const SLOPE_ANGLE = Math.atan(SCENE.slope);
+const COS_A = Math.cos(SLOPE_ANGLE), SIN_A = Math.sin(SLOPE_ANGLE);
+
+// ───────────────────────────────────────────────────────────── Shader
+const f  = (x) => x.toFixed(8);
+const v3 = (a) => `vec3f(${a.map(f).join(', ')})`;
+
+// Shared by the compute and render shaders: parameters, grid and the signed
+// distance field. Both compile the same sdf() code, which makes the collision
+// geometry and the visible landscape one and the same object.
+const COMMON = /* wgsl */`
+struct Params {
+  numParticles   : u32,
+  emitCount      : u32,    // this many pool particles enter in this step
+  inletNz        : u32,    // width of the inlet lattice in particles
+  cellCount      : u32,    // number of grid cells = index of the bin for outside
+  gridDim        : vec3u,
+  _pad0          : u32,
+  dt             : f32,
+  gravity        : f32,
+  h              : f32,
+  targetDensity  : f32,
+  pressureK      : f32,
+  nearPressureK  : f32,
+  viscosity      : f32,
+  mass           : f32,
+  boundsMin      : vec3f,
+  particleRadius : f32,
+  boundsMax      : vec3f,
+  damping        : f32,
+  mousePos       : vec3f,
+  mouseRadius    : f32,
+  mouseStrength  : f32,
+  maxSpeed       : f32,
+  spacing        : f32,
+  inletSpeed     : f32,
+  emitAlong      : f32,    // how far the new layer has already advanced
+  emitStagger    : f32,    // offset of the layer in particle spacings (+-0.25)
+  inletY0        : f32,
+  inletZ0        : f32,
+  // Kernel prefactors. They depend only on h, so they are computed once in
+  // JavaScript instead of for every neighbour pair in the shader.
+  kW2            : f32,
+  kDW2           : f32,
+  kW3            : f32,
+  kDW3           : f32,
+  kWvisc         : f32,
+}
+
+// vec3f takes 16 bytes; the fourth slot would otherwise be padding. In the sorted
+// array it holds density and near density; in the unsorted one it stays 0.
+struct Particle {
+  pos  : vec3f,
+  dens : f32,
+  vel  : vec3f,
+  near : f32,
+}
+
+@group(0) @binding(0) var<uniform> P : Params;
+
+// ── Uniform grid for the neighbour search
+fn cellCoord(p: vec3f) -> vec3i {
+  return vec3i(floor((p - P.boundsMin) / P.h));
+}
+fn inGrid(c: vec3i) -> bool {
+  return all(c >= vec3i(0)) && all(vec3u(c) < P.gridDim);
+}
+fn cellIndex(c: vec3i) -> u32 {
+  return (u32(c.z) * P.gridDim.y + u32(c.y)) * P.gridDim.x + u32(c.x);
+}
+// Parked particles sit at a fixed point well outside the grid.
+fn parkPosition() -> vec3f {
+  return P.boundsMin - vec3f(100.0);
+}
+
+// ── Signed distance field of the scene: distance to the nearest solid surface,
+// positive in free space, negative inside the solid.
+const SLOPE_T  = vec2f(${f(COS_A)}, ${f(-SIN_A)});   // direction downhill (x, y)
+const SLOPE_U  = vec2f(${f(SIN_A)}, ${f(COS_A)});    // normal of the terrain plane
+const ORIGIN   = vec2f(${f(SCENE.origin[0])}, ${f(SCENE.origin[1])});
+const TROUGH_R = ${f(SCENE.troughRadius)};
+const TROUGH_C = ${f(SCENE.troughCenter)};
+const INLET_X  = ${f(SCENE.inlet.x)};
+const SDF_EPS  = ${f(SCENE.sdfEps)};
+
+fn sdBox(p: vec3f, lo: vec3f, hi: vec3f) -> f32 {
+  let q = abs(p - 0.5 * (lo + hi)) - 0.5 * (hi - lo);
+  return length(max(q, vec3f(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+fn sdf(p: vec3f) -> f32 {
+  // height above the sloped terrain plane
+  let hgt = dot(p.xy - ORIGIN, SLOPE_U);
+  // terrain minus the trough cylinder, clipped to the block
+  let trough = TROUGH_R - length(vec2f(hgt - TROUGH_C, p.z));
+  var d = max(max(hgt, trough), sdBox(p, ${v3(SCENE.blockMin)}, ${v3(SCENE.blockMax)}));
+  // union with back wall and stones: the minimum of the distances
+  d = min(d, sdBox(p, ${v3(SCENE.wallMin)}, ${v3(SCENE.wallMax)}));
+${SCENE.stones.map(([x, y, z, r]) =>
+  `  d = min(d, length(p - ${v3([x, y, z])}) - ${f(r)});`).join('\n')}
+  return d;
+}
+
+// Normal = direction in which the distance grows fastest (gradient),
+// from differences left/right, bottom/top, back/front.
+fn sdfNormal(p: vec3f) -> vec3f {
+  let e = vec2f(SDF_EPS, 0.0);
+  let g = vec3f(sdf(p + e.xyy) - sdf(p - e.xyy),
+                sdf(p + e.yxy) - sdf(p - e.yxy),
+                sdf(p + e.yyx) - sdf(p - e.yyx));
+  let l = length(g);
+  if (l < 1e-8) { return vec3f(0.0, 1.0, 0.0); }
+  return g / l;
+}
+`;
+
+const SHADER = COMMON + /* wgsl */`
+// State between steps, plus the predicted position of this step.
+@group(0) @binding(1) var<storage, read_write> particles : array<Particle>;
+@group(0) @binding(2) var<storage, read_write> predicted : array<vec3f>;
+
+// Neighbour search as a counting sort: cellCounts[c] particles lie in cell c,
+// packed into the cellCounts[c] slots starting at cellOffsets[c].
+// The last entry is not a cell but the bin for particles outside the grid.
+// Since M2 this bin is the pool of the source (see integrate).
+@group(0) @binding(3) var<storage, read_write> cellCounts  : array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read_write> cellOffsets : array<atomic<u32>>;
+
+// The same particles, sorted by cell. Density, forces and integration work
+// only on these arrays: neighbours in space are then neighbours in memory
+// too. sortedIndices remembers where a slot came from; only verify mode
+// needs that.
+@group(0) @binding(5) var<storage, read_write> sortedParticles : array<Particle>;
+@group(0) @binding(8) var<storage, read_write> sortedIndices   : array<u32>;
+
+// What a particle needs from its neighbours, packed into two arrays of
+// 16 bytes each so the inner loops touch little memory:
+//   neighborPos = (predicted position, pressure term  p / rho²)
+//   neighborVel = (velocity,           near-pressure term)
+// The density pass computes both terms once per particle. Before, the
+// force pass divided them again for every neighbour pair.
+@group(0) @binding(6) var<storage, read_write> neighborPos : array<vec4f>;
+@group(0) @binding(7) var<storage, read_write> neighborVel : array<vec4f>;
+
+// ── Kernels (3D, normalised: integral over the ball = 1)
+// Spherical shell instead of a ring: integral of C*(h-r)^n * 4*pi*r^2 dr = 1 gives C.
+fn W2(d: f32) -> f32 {
+  if (d >= P.h) { return 0.0; }
+  let v = P.h - d;
+  return v * v * P.kW2;
+}
+fn dW2(d: f32) -> f32 {
+  if (d >= P.h) { return 0.0; }
+  let v = P.h - d;
+  return -v * P.kDW2;
+}
+fn W3(d: f32) -> f32 {
+  if (d >= P.h) { return 0.0; }
+  let v = P.h - d;
+  return v * v * v * P.kW3;
+}
+fn dW3(d: f32) -> f32 {
+  if (d >= P.h) { return 0.0; }
+  let v = P.h - d;
+  return -v * v * P.kDW3;
+}
+fn Wvisc(d: f32) -> f32 {
+  if (d >= P.h) { return 0.0; }
+  let v = P.h * P.h - d * d;
+  return v * v * v * P.kWvisc;
+}
+
+// Bin a particle is sorted into. Particles outside the grid go into a bin of
+// their own after the last cell. That way every particle keeps a slot in the
+// sorted array, but nobody finds them as neighbours.
+fn binIndex(p: vec3f) -> u32 {
+  let c = cellCoord(p);
+  if (!inGrid(c)) { return P.cellCount; }
+  return cellIndex(c);
+}
+
+// ── Pass 1: external forces + position prediction
+@compute @workgroup_size(64)
+fn externalForces(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= P.numParticles) { return; }
+
+  let pos = particles[i].pos;
+  // Parked particles stay put until the source fetches them.
+  if (!inGrid(cellCoord(pos))) { predicted[i] = pos; return; }
+
+  var v = particles[i].vel;
+  v.y -= P.gravity * P.dt;
+
+  if (P.mouseStrength != 0.0) {
+    let off  = P.mousePos - pos;
+    let dist = length(off);
+    if (dist < P.mouseRadius && dist > 1e-5) {
+      let t   = 1.0 - dist / P.mouseRadius;
+      let dir = off / dist;
+      v += dir * P.mouseStrength * t * P.dt;
+      v *= 1.0 - 0.12 * t;
+    }
+  }
+
+  particles[i].vel = v;
+  predicted[i]     = pos + v * P.dt;
+}
+
+// ── Pass 2: clear the counters (all cells plus the bin for outside)
+@compute @workgroup_size(64)
+fn clearGrid(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x > P.cellCount) { return; }
+  atomicStore(&cellCounts[gid.x], 0u);
+}
+
+// ── Pass 3: count how many particles lie in each bin
+@compute @workgroup_size(64)
+fn countCells(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= P.numParticles) { return; }
+  atomicAdd(&cellCounts[binIndex(predicted[i])], 1u);
+}
+
+// ── Pass 4: prefix sum over the counters. Runs in SCAN_SHADER as a block scan.
+// Afterwards cellOffsets[c] holds the inclusive sum, i.e. the end of bin c
+// in the sorted array.
+
+// ── Pass 5: sort into place
+// Each particle decrements the end of its bin by one and takes the slot that
+// frees up. Once all are done, cellOffsets[c] holds the start of the bin.
+// Which particle gets which slot is down to chance; atomicSub guarantees
+// that every slot is handed out exactly once.
+// The data itself moves to the slot, not just a reference to it.
+@compute @workgroup_size(64)
+fn sortParticles(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= P.numParticles) { return; }
+
+  let slot = atomicSub(&cellOffsets[binIndex(predicted[i])], 1u) - 1u;
+  sortedParticles[slot] = particles[i];
+  neighborPos[slot]     = vec4f(predicted[i], 0.0);
+  neighborVel[slot]     = vec4f(particles[i].vel, 0.0);
+  sortedIndices[slot]   = i;
+}
+
+// From here on i is a slot in the sorted array, not a particle from before.
+// The bin for outside is the last one: all slots from poolStart() on belong
+// to the pool and take no part in the physics.
+fn poolStart() -> u32 {
+  return atomicLoad(&cellOffsets[P.cellCount]);
+}
+
+// Cells are numbered row by row along x, and the sorted array follows the
+// cell number. The cells x-1, x, x+1 of a row are therefore contiguous:
+// instead of looking up three cells one by one, the start of the first and
+// the start of the cell after the last are enough (the end of a cell is the
+// start of the next). 9 ranges instead of 27 cells.
+// Returns (start, end) in the sorted array for the row (c.y + dy, c.z + dz).
+fn rowRange(c: vec3i, dy: i32, dz: i32) -> vec2u {
+  let y = c.y + dy;
+  let z = c.z + dz;
+  if (y < 0 || z < 0 || u32(y) >= P.gridDim.y || u32(z) >= P.gridDim.z) { return vec2u(0u); }
+  let row   = (u32(z) * P.gridDim.y + u32(y)) * P.gridDim.x;
+  let first = row + u32(max(c.x - 1, 0));
+  let last  = row + u32(min(c.x + 1, i32(P.gridDim.x) - 1));
+  return vec2u(atomicLoad(&cellOffsets[first]), atomicLoad(&cellOffsets[last + 1u]));
+}
+
+// ── Pass 6: density and near density over 3x3x3 cells (as 9 row ranges)
+@compute @workgroup_size(64)
+fn computeDensity(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= P.numParticles) { return; }
+  if (i >= poolStart()) { return; }   // pool: density stays 0, as set by the sort
+
+  let pi = neighborPos[i].xyz;
+  let c  = cellCoord(pi);
+  var dens = 0.0;
+  var near = 0.0;
+
+  for (var dz = -1; dz <= 1; dz++) {
+    for (var dy = -1; dy <= 1; dy++) {
+      let range = rowRange(c, dy, dz);
+      for (var k = range.x; k < range.y; k++) {
+        let d = distance(pi, neighborPos[k].xyz);
+        dens += P.mass * W2(d);
+        near += P.mass * W3(d);
+      }
+    }
+  }
+  sortedParticles[i].dens = dens;
+  sortedParticles[i].near = near;
+  // The terms of the momentum-conserving pressure force, ready for the neighbours.
+  neighborPos[i].w = pressureOf(dens) / (dens * dens);
+  neighborVel[i].w = near * P.nearPressureK / max(near * near, 1e-6);
+}
+
+fn pressureOf(d: f32) -> f32 {
+  return (d - P.targetDensity) * P.pressureK;
+}
+
+// ── Pass 7: pressure and viscosity forces
+@compute @workgroup_size(64)
+fn computeForces(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= P.numParticles) { return; }
+
+  let me = sortedParticles[i];
+  if (me.dens <= 1e-6) { return; }   // also covers the pool: density 0
+
+  let pi        = neighborPos[i].xyz;
+  let vi        = me.vel;
+  let termPi    = neighborPos[i].w;
+  let termNi    = neighborVel[i].w;
+  var accel     = vec3f(0.0);
+  var viscAccum = vec3f(0.0);
+  let c         = cellCoord(pi);
+
+  for (var dz = -1; dz <= 1; dz++) {
+    for (var dy = -1; dy <= 1; dy++) {
+      let range = rowRange(c, dy, dz);
+      for (var j = range.x; j < range.y; j++) {
+        if (j == i) { continue; }
+
+        let pj  = neighborPos[j];
+        let off = pj.xyz - pi;
+        let d   = length(off);
+        if (d >= P.h) { continue; }
+
+        // direction i -> j; arbitrary but deterministic if the two coincide
+        var dir = vec3f(0.0, 1.0, 0.0);
+        if (d > 1e-6) { dir = off / d; }
+
+        let vj = neighborVel[j];
+
+        // Momentum-conserving form: the sum of the two terms is symmetric in i and
+        // j and the direction flips, so the force of i on j is exactly the negative
+        // of the force of j on i. dW2 < 0, so at excess density i is pushed away
+        // from j.
+        accel += dir * dW2(d) * P.mass * (termPi + pj.w);
+        accel += dir * dW3(d) * P.mass * (termNi + vj.w);
+
+        viscAccum += (vj.xyz - vi) * Wvisc(d);
+      }
+    }
+  }
+
+  var v = vi + accel * P.dt + viscAccum * P.viscosity * P.dt;
+  let sp = length(v);
+  if (sp > P.maxSpeed) { v = v * (P.maxSpeed / sp); }
+  sortedParticles[i].vel = v;
+  // Neighbours read neighborVel in this pass, and the new velocity is only in
+  // sortedParticles: everyone uses the old velocities, so the result does
+  // not depend on thread order.
+${VISC_IN_PLACE ? `  // Old behaviour (?race=1): the new velocity also goes into the copy the
+  // neighbours are reading right now. The viscosity term then depends on
+  // thread order.
+  neighborVel[i] = vec4f(v, termNi);` : ''}
+}
+
+// Slot in the inlet lattice for the pool particle with this rank
+fn inletSlot(rank: u32) -> vec3f {
+  let iz = rank % P.inletNz;
+  let iy = rank / P.inletNz;
+  return vec3f(INLET_X + P.particleRadius + P.emitAlong,
+               P.inletY0 + (f32(iy) + 0.5 + P.emitStagger) * P.spacing,
+               P.inletZ0 + (f32(iz) + 0.5 + P.emitStagger) * P.spacing);
+}
+
+// ── Pass 8: integration, river bed, source and drain
+// Reads the sorted state and writes it back to particles in the same order.
+// The next step therefore starts out almost sorted.
+@compute @workgroup_size(64)
+fn integrate(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= P.numParticles) { return; }
+
+  // Source. The pool sits contiguously at the end of the sorted array, so the
+  // rank of a particle in it is simply its slot minus the start of the bin.
+  // The first emitCount fill the lattice at the inlet, the rest stay parked.
+  // No counter, no extra buffer: the sort provides the numbering.
+  let start = poolStart();
+  if (i >= start) {
+    let rank = i - start;
+    if (rank < P.emitCount) {
+      particles[i] = Particle(inletSlot(rank), 0.0, vec3f(SLOPE_T, 0.0) * P.inletSpeed, 0.0);
+    } else {
+      particles[i] = Particle(parkPosition(), 0.0, vec3f(0.0), 0.0);
+    }
+    return;
+  }
+
+  var p = sortedParticles[i].pos;
+  var v = sortedParticles[i].vel;
+  p += v * P.dt;
+
+  // River bed. If the particle is closer to the surface than its radius, it
+  // is pushed out along the normal until the distance is right again. The
+  // velocity component into the wall is reversed and damped, the component
+  // along the wall stays: the water slides.
+  let d = sdf(p);
+  if (d < P.particleRadius) {
+    let n = sdfNormal(p);
+    p += n * (P.particleRadius - d);
+    let vn = dot(v, n);
+    if (vn < 0.0) { v -= (1.0 + P.damping) * vn * n; }
+  }
+
+  // Drain: whoever has left the grid is parked and is available to the
+  // source again in the next step.
+  if (!inGrid(cellCoord(p))) {
+    p = parkPosition();
+    v = vec3f(0.0);
+  }
+
+  particles[i] = Particle(p, 0.0, v, 0.0);
+}
+`;
+
+// Parallel prefix sum as a block scan in three levels, four dispatches.
+// Until M3 this was Hillis-Steele: log2(n) rounds, each over all cells, so
+// n * log2(n) additions (18 rounds over 260 568 cells at 65 536 particles).
+// The block scan touches each cell only twice:
+//   1. scanBlocks  Each block of 128 cells builds its own prefix sum (one
+//                  thread per block, sequentially) and reports its total.
+//   2. scanSupers  The same one level up: 128 block totals form a super
+//                  block. Afterwards each block holds the sum of the blocks
+//                  before it in the same super block.
+//   3. scanTop     Prefix sum over the super blocks: a few dozen values at
+//                  most, a single thread.
+//   4. scanAdd     Each cell adds what lies before its block: the blocks
+//                  before it in the super block plus all super blocks before.
+// Why three levels instead of two: measured, a GPU thread needs about 130 ns per
+// loop iteration. With two levels one chain is always long (with blocks of 64,
+// 4072 block totals in sequence: 0.54 ms). With three levels no chain is
+// longer than 128 steps.
+// No race: in 1 and 2 each thread writes only to its block, in 3 there is
+// only one thread, in 4 each thread writes only its own cell.
+// Result as before: sums[c] is the inclusive sum, i.e. the end of bin c.
+const SCAN_BLOCK = parseInt(query.get('sb') ?? '128', 10);
+const SCAN_SHADER = /* wgsl */`
+struct Scan {
+  count  : u32,   // number of bins
+  blocks : u32,   // number of blocks
+  supers : u32,   // number of super blocks
+  _pad   : u32,
+}
+const BLOCK = ${SCAN_BLOCK}u;
+
+@group(0) @binding(0) var<uniform> S : Scan;
+@group(0) @binding(1) var<storage, read>       counts    : array<u32>;
+@group(0) @binding(2) var<storage, read_write> sums      : array<u32>;
+@group(0) @binding(3) var<storage, read_write> blockSums : array<u32>;
+@group(0) @binding(4) var<storage, read_write> superSums : array<u32>;
+
+@compute @workgroup_size(64)
+fn scanBlocks(@builtin(global_invocation_id) gid: vec3u) {
+  let b = gid.x;
+  if (b >= S.blocks) { return; }
+
+  let end = min((b + 1u) * BLOCK, S.count);
+  var sum = 0u;
+  for (var i = b * BLOCK; i < end; i++) {
+    sum += counts[i];
+    sums[i] = sum;
+  }
+  blockSums[b] = sum;
+}
+
+@compute @workgroup_size(64)
+fn scanSupers(@builtin(global_invocation_id) gid: vec3u) {
+  let s = gid.x;
+  if (s >= S.supers) { return; }
+
+  let end = min((s + 1u) * BLOCK, S.blocks);
+  var sum = 0u;
+  for (var b = s * BLOCK; b < end; b++) {
+    let v = blockSums[b];
+    blockSums[b] = sum;    // sum of the blocks before b in the same super block
+    sum += v;
+  }
+  superSums[s] = sum;
+}
+
+@compute @workgroup_size(1)
+fn scanTop(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x > 0u) { return; }
+
+  var sum = 0u;
+  for (var s = 0u; s < S.supers; s++) {
+    let v = superSums[s];
+    superSums[s] = sum;    // sum of all super blocks before s
+    sum += v;
+  }
+}
+
+@compute @workgroup_size(64)
+fn scanAdd(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= S.count) { return; }
+  let b = i / BLOCK;
+  sums[i] += blockSums[b] + superSums[b / BLOCK];
+}
+`;
+
+// Camera and everything else the render shaders share.
+const CAMERA_WGSL = /* wgsl */`
+struct Camera {
+  viewProj    : mat4x4f,
+  eye         : vec3f,
+  tanHalf     : f32,     // tangent of half the vertical field of view
+  right       : vec3f,
+  aspect      : f32,
+  up          : vec3f,
+  pointRadius : f32,
+  forward     : vec3f,
+  surfRadius  : f32,     // sphere radius for the water surface
+  near        : f32,
+  far         : f32,
+  thickScale  : f32,     // turns the sum of sphere chords into a water thickness
+  blurRadius  : f32,     // filter radius in world space
+  blurSigmaZ  : f32,     // depth difference beyond which a neighbour hardly counts
+  fluidScale  : f32,     // resolution of the water textures relative to the frame
+  spacing     : f32,     // particle spacing
+  _pad        : f32,
+}
+`;
+
+// Rendering: first the river bed, then the particles as points, both with
+// depth test. The bed is not built from triangles but computed per pixel from
+// the same sdf() the collision uses (sphere tracing).
+const RENDER_SHADER = COMMON + /* wgsl */`
+${CAMERA_WGSL}
+@group(0) @binding(1) var<uniform> C : Camera;
+@group(0) @binding(2) var<storage, read> particles : array<Particle>;
+
+const LIGHT = vec3f(0.36, 0.85, 0.39);
+
+// ── River bed
+struct BedVS {
+  @builtin(position) pos : vec4f,
+  @location(0)       ndc : vec2f,
+}
+
+@vertex
+fn bedVs(@builtin(vertex_index) vi: u32) -> BedVS {
+  // one triangle covering the whole screen
+  let ndc = vec2f(f32((vi << 1u) & 2u), f32(vi & 2u)) * 2.0 - vec2f(1.0);
+  var o: BedVS;
+  o.pos = vec4f(ndc, 0.0, 1.0);
+  o.ndc = ndc;
+  return o;
+}
+
+struct BedOut {
+  @location(0)         color : vec4f,
+  @builtin(frag_depth) depth : f32,
+}
+
+@fragment
+fn bedFs(frag: BedVS) -> BedOut {
+  let dir = normalize(C.forward + C.right * (frag.ndc.x * C.aspect * C.tanHalf)
+                                + C.up * (frag.ndc.y * C.tanHalf));
+  // Sphere tracing: sdf(p) says how far one can safely go without passing
+  // through a surface. So always go exactly that far.
+  var t = 0.0;
+  var hit = false;
+  for (var k = 0; k < 160; k++) {
+    let d = sdf(C.eye + dir * t);
+    if (d < 0.0008 * t) { hit = true; break; }
+    t += d;
+    if (t > 40.0) { break; }
+  }
+  if (!hit) { discard; }
+
+  let p = C.eye + dir * t;
+  let n = sdfNormal(p);
+  let diffuse = max(dot(n, normalize(LIGHT)), 0.0);
+  let clip = C.viewProj * vec4f(p, 1.0);
+
+  var o: BedOut;
+  o.color = vec4f(vec3f(0.44, 0.45, 0.47) * (0.30 + 0.70 * diffuse), 1.0);
+  o.depth = clip.z / clip.w;
+  return o;
+}
+
+// ── Particles as points
+struct VSOut {
+  @builtin(position) pos   : vec4f,
+  @location(0)       uv    : vec2f,
+  @location(1)       speed : f32,
+}
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32,
+      @builtin(instance_index) ii: u32) -> VSOut {
+  var quad = array<vec2f, 6>(
+    vec2f(-1.0, -1.0), vec2f( 1.0, -1.0), vec2f(-1.0,  1.0),
+    vec2f(-1.0,  1.0), vec2f( 1.0, -1.0), vec2f( 1.0,  1.0)
+  );
+  let corner = quad[vi];
+  let p = particles[ii];
+
+  var o: VSOut;
+  o.uv    = corner;
+  o.speed = length(p.vel);
+  if (!inGrid(cellCoord(p.pos))) {
+    o.pos = vec4f(0.0, 0.0, 2.0, 1.0);   // parked: behind the clip plane, invisible
+    return o;
+  }
+  // The quad always faces the camera.
+  let wp = p.pos + (C.right * corner.x + C.up * corner.y) * C.pointRadius;
+  o.pos = C.viewProj * vec4f(wp, 1.0);
+  return o;
+}
+
+fn palette(t: f32) -> vec3f {
+  let c1 = vec3f(0.05, 0.16, 0.48);
+  let c2 = vec3f(0.12, 0.62, 0.94);
+  let c3 = vec3f(0.86, 0.98, 1.00);
+  if (t < 0.5) { return mix(c1, c2, t * 2.0); }
+  return mix(c2, c3, (t - 0.5) * 2.0);
+}
+
+@fragment
+fn fs(frag: VSOut) -> @location(0) vec4f {
+  let r2 = dot(frag.uv, frag.uv);
+  if (r2 > 1.0) { discard; }
+  // Light the disc like a sphere so depth is readable.
+  let n = C.right * frag.uv.x + C.up * frag.uv.y - C.forward * sqrt(1.0 - r2);
+  let diffuse = max(dot(n, normalize(LIGHT)), 0.0);
+  let t = clamp(frag.speed / 7.0, 0.0, 1.0);
+  return vec4f(palette(t) * (0.42 + 0.58 * diffuse), 1.0);
+}
+
+// ── Water surface: depth and thickness of the particles (M3)
+// The same camera-facing quads, but larger (the spheres should overlap)
+// and with a different output.
+struct SurfVS {
+  @builtin(position) pos   : vec4f,
+  @location(0)       uv    : vec2f,
+  @location(1)       viewZ : f32,   // distance of the sphere centre along the view direction
+}
+
+@vertex
+fn surfVs(@builtin(vertex_index) vi: u32,
+          @builtin(instance_index) ii: u32) -> SurfVS {
+  var quad = array<vec2f, 6>(
+    vec2f(-1.0, -1.0), vec2f( 1.0, -1.0), vec2f(-1.0,  1.0),
+    vec2f(-1.0,  1.0), vec2f( 1.0, -1.0), vec2f( 1.0,  1.0)
+  );
+  let corner = quad[vi];
+  let p = particles[ii];
+
+  var o: SurfVS;
+  o.uv    = corner;
+  o.viewZ = dot(p.pos - C.eye, C.forward);
+  if (!inGrid(cellCoord(p.pos))) {
+    o.pos = vec4f(0.0, 0.0, 2.0, 1.0);
+    return o;
+  }
+  let wp = p.pos + (C.right * corner.x + C.up * corner.y) * C.surfRadius;
+  o.pos = C.viewProj * vec4f(wp, 1.0);
+  return o;
+}
+
+struct DepthOut {
+  @location(0)         z     : vec4f,
+  @builtin(frag_depth) depth : f32,
+}
+
+// Step 1: how far is the sphere surface in this pixel from the camera? The
+// depth test keeps the frontmost sphere. The result is a height map of the
+// water surface as seen from the camera.
+@fragment
+fn depthFs(frag: SurfVS) -> DepthOut {
+  let r2 = dot(frag.uv, frag.uv);
+  if (r2 > 1.0) { discard; }
+  // In the middle of the quad the sphere bulges forward by its radius.
+  let z = frag.viewZ - sqrt(1.0 - r2) * C.surfRadius;
+  var o: DepthOut;
+  o.z = vec4f(z, 0.0, 0.0, 1.0);
+  // the same depth value the projection would give for this distance
+  o.depth = C.far / (C.far - C.near) * (1.0 - C.near / z);
+  return o;
+}
+
+// Step 4: how much water does the view ray cross? Each sphere contributes
+// the length of the chord the ray cuts out of it; the contributions are
+// added up (additive blending, no depth test among them).
+@fragment
+fn thickFs(frag: SurfVS) -> @location(0) vec4f {
+  let r2 = dot(frag.uv, frag.uv);
+  if (r2 > 1.0) { discard; }
+  return vec4f(2.0 * C.surfRadius * sqrt(1.0 - r2) * C.thickScale, 0.0, 0.0, 1.0);
+}
+`;
+
+// Screen-space water surface, steps 2 and 3: smooth and composite.
+// Both run as a triangle over the whole screen and read textures.
+const SURFACE_SHADER = CAMERA_WGSL + /* wgsl */`
+@group(0) @binding(0) var<uniform> C : Camera;
+
+@vertex
+fn fullVs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
+  return vec4f(vec2f(f32((vi << 1u) & 2u), f32(vi & 2u)) * 2.0 - vec2f(1.0), 0.0, 1.0);
+}
+
+const NO_WATER = 1e8;   // the depth texture is cleared with 1e9: no water there
+
+// ── Step 2: bilateral filter, one direction per pass
+// Each neighbour gets two weights: one for the distance in the image (Gauss)
+// and one for the difference in depth. The bumps of individual spheres are
+// small depth differences and get averaged; the edge of the water or a
+// splash in front of the river are large ones and stay.
+override DIR_X     : f32 = 1.0;
+override DIR_Y     : f32 = 0.0;
+override BILATERAL : f32 = 1.0;   // 1 = depth (edge-preserving), 0 = thickness (plain Gauss)
+
+@group(0) @binding(1) var srcTex : texture_2d<f32>;
+@group(0) @binding(2) var zTex   : texture_2d<f32>;
+
+@fragment
+fn blurFs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  let px     = vec2i(pos.xy);
+  let dim    = vec2i(textureDimensions(srcTex));
+  let center = textureLoad(srcTex, px, 0).r;
+  let z      = textureLoad(zTex, px, 0).r;
+  if (z > NO_WATER || C.blurRadius <= 0.0) { return vec4f(center, 0.0, 0.0, 1.0); }
+
+  // The radius is fixed in world space, so in pixels it shrinks the further
+  // away the water is. At most 12 taps per side; if the radius is larger,
+  // the taps spread apart.
+  let radiusPx = C.blurRadius * f32(dim.y) / (2.0 * C.tanHalf * z);
+  let n        = i32(clamp(ceil(radiusPx), 1.0, 12.0));
+  let stepPx   = radiusPx / f32(n);
+
+  var sum  = 0.0;
+  var wsum = 0.0;
+  for (var i = -n; i <= n; i++) {
+    let o = vec2i(round(vec2f(DIR_X, DIR_Y) * (f32(i) * stepPx)));
+    let v = textureLoad(srcTex, clamp(px + o, vec2i(0), dim - vec2i(1)), 0).r;
+    let x = f32(i) / f32(n);
+    var w = exp(-2.0 * x * x);                 // weight by distance in the image
+    if (BILATERAL > 0.5) {
+      if (v > NO_WATER) { continue; }          // background never counts
+      let dz = (v - center) / C.blurSigmaZ;
+      w *= exp(-0.5 * dz * dz);                // weight by depth difference
+    }
+    sum  += v * w;
+    wsum += w;
+  }
+  return vec4f(sum / wsum, 0.0, 0.0, 1.0);
+}
+
+// ── Step 3: normals from depth, then stylised shading
+@group(0) @binding(3) var tTex   : texture_2d<f32>;
+@group(0) @binding(4) var bedTex : texture_2d<f32>;
+
+fn loadZ(q: vec2i, dim: vec2i) -> f32 {
+  return textureLoad(zTex, clamp(q, vec2i(0), dim - vec2i(1)), 0).r;
+}
+
+// From pixel and depth back to the point in space: camera plus depth times view ray.
+fn worldPos(q: vec2i, z: f32, dim: vec2i) -> vec3f {
+  let ndc = vec2f((f32(q.x) + 0.5) / f32(dim.x) * 2.0 - 1.0,
+                  1.0 - (f32(q.y) + 0.5) / f32(dim.y) * 2.0);
+  return C.eye + z * (C.forward + C.right * (ndc.x * C.aspect * C.tanHalf)
+                                + C.up * (ndc.y * C.tanHalf));
+}
+
+const LIGHT   = vec3f(0.36, 0.85, 0.39);
+const SHALLOW = vec3f(0.33, 0.73, 0.77);   // pale turquoise where the water is shallow
+const DEEP    = vec3f(0.08, 0.30, 0.50);   // muted blue where it is deep
+const FOAM    = vec3f(0.95, 0.98, 0.98);
+const SKY     = vec3f(0.72, 0.86, 0.96);   // what the water reflects (no sky yet)
+
+@fragment
+fn compositeFs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  let bed = textureLoad(bedTex, vec2i(pos.xy), 0).rgb;
+  let dim = vec2i(textureDimensions(zTex));
+  let q   = clamp(vec2i(pos.xy * C.fluidScale), vec2i(0), dim - vec2i(1));
+  let z   = loadZ(q, dim);
+  if (z > NO_WATER) { return vec4f(bed, 1.0); }
+
+  // Two directions that lie in the surface: to the neighbour on the right and
+  // to the neighbour above. At edges take the side with the smaller depth jump,
+  // otherwise the normal tips over there. Their cross product is perpendicular
+  // to the surface and points to the camera.
+  let p  = worldPos(q, z, dim);
+  let zl = loadZ(q + vec2i(-1, 0), dim);
+  let zr = loadZ(q + vec2i( 1, 0), dim);
+  let zu = loadZ(q + vec2i(0, -1), dim);
+  let zd = loadZ(q + vec2i(0,  1), dim);
+  var dx = worldPos(q + vec2i(1, 0), zr, dim) - p;
+  if (abs(zl - z) < abs(zr - z)) { dx = p - worldPos(q + vec2i(-1, 0), zl, dim); }
+  var dy = worldPos(q + vec2i(0, -1), zu, dim) - p;
+  if (abs(zd - z) < abs(zu - z)) { dy = p - worldPos(q + vec2i(0, 1), zd, dim); }
+
+  var n = -C.forward;
+  let c = cross(dx, dy);
+  let jump = max(min(abs(zl - z), abs(zr - z)), min(abs(zu - z), abs(zd - z)));
+  if (jump < 4.0 * C.surfRadius && dot(c, c) > 1e-20) { n = normalize(c); }
+
+  // Look: stylised-realistic. Soft gradients instead of steps, but strong
+  // colours and no physically exact optics.
+  let thick = textureLoad(tTex, q, 0).r;
+  let l = normalize(LIGHT);
+  let v = normalize(C.eye - p);
+
+  // Refraction, simplified: the image of the bed is sampled where the normal
+  // deflects the view, further the thicker the water is.
+  let full   = vec2i(textureDimensions(bedTex));
+  let bend   = vec2f(dot(n, C.right), -dot(n, C.up)) * min(thick, 0.5) * 0.10 * f32(full.y);
+  let behind = textureLoad(bedTex, clamp(vec2i(pos.xy + bend), vec2i(0), full - vec2i(1)), 0).rgb;
+
+  // Absorption: the more water the view ray crosses, the less you see of the
+  // bed and the more of the water's own colour (first turquoise, then blue).
+  // 1 - exp(-k * thickness) is the share the water swallows.
+  // The rate 2.8 was chosen by eye: at 0.5 of water path a quarter of the bed
+  // is still visible. With 5 the water looked like syrup, with 1.5 too thin.
+  let body    = mix(SHALLOW, DEEP, 1.0 - exp(-2.4 * thick));
+  let opacity = 1.0 - exp(-2.8 * thick);
+  var col = mix(behind * vec3f(0.86, 0.97, 1.0), body, opacity);
+
+  // Just a hint of light from the normal. Water scatters hardly any light at
+  // the surface; strong shading would make it look like gel.
+  col *= 0.94 + 0.08 * max(dot(n, l), 0.0);
+
+  // Fresnel reflection: seen at a grazing angle, water reflects more
+  let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+  col = mix(col, SKY, 0.85 * fresnel);
+
+  // Specular highlight: small and sharp
+  let spec = pow(max(dot(n, normalize(l + v)), 0.0), 320.0);
+  col += vec3f(1.0) * (0.35 * spec + 0.55 * smoothstep(0.5, 0.9, spec));
+
+  // Foam as a narrow fringe where the water is only about one particle thick:
+  // at banks and stones, in splashes and in the curtain of the waterfall.
+  col = mix(col, FOAM, 0.6 * (1.0 - smoothstep(0.7 * C.spacing, 1.7 * C.spacing, thick)));
+
+  return vec4f(col, 1.0);
+}
+`;
+
+// ────────────────────────────────────────────────────────── Constants
+const PARAMS_BYTES   = 176;  // 41 x 4 bytes, rounded up to 16 bytes
+const PARAMS_STRIDE  = 256;  // one parameter set per substep (WebGPU offset alignment)
+const WORKGROUP      = 64;
+const MAX_SUBSTEPS   = 16;
+const WALL_DAMPING   = 0.15;
+const NO_EMIT        = { count: 0, along: 0, stagger: 0 };
+
+const el = (id) => document.getElementById(id);
+const canvas = el('c');
+
+// ─────────────────────────────────────── Rest density on the lattice
+// We sum the kernel over a perfect cubic lattice with the spawn
+// spacing. That way targetDensity need not be guessed.
+function restDensity(h, spacing, mass) {
+  let sum = 0;
+  const R = Math.ceil(h / spacing);
+  for (let z = -R; z <= R; z++) {
+    for (let y = -R; y <= R; y++) {
+      for (let x = -R; x <= R; x++) {
+        const d = Math.hypot(x, y, z) * spacing;
+        if (d < h) sum += mass * (h - d) * (h - d) * 15 / (2 * PI * h ** 5);
+      }
+    }
+  }
+  return sum;
+}
+
+// When is the next layer at the inlet due? Per step the water advances by
+// inflow*dt; once it is one particle spacing further, a layer follows.
+// `along` is the remainder by which the new layer has already advanced.
+// Successive layers are offset by half a spacing.
+function makeEmitter(spacing, layer) {
+  let acc = spacing, parity = 0;
+  return (dt, inflow) => {
+    acc += inflow * dt;
+    if (acc < spacing) return NO_EMIT;
+    acc = Math.min(acc - spacing, spacing);
+    parity ^= 1;
+    return { count: layer, along: acc, stagger: parity ? 0.25 : -0.25 };
+  };
+}
+
+// ────────────────────────────────────────────────────────── Vectors
+const sub3   = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot3   = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm3  = (a) => { const l = Math.hypot(...a); return [a[0] / l, a[1] / l, a[2] / l]; };
+
+// ───────────────────────────────────────────────────────────── Setup
+async function main() {
+  if (!navigator.gpu) return fail('navigator.gpu is missing.');
+
+  let adapter;
+  try {
+    adapter = await navigator.gpu.requestAdapter();
+  } catch (e) {
+    return fail(String(e));
+  }
+  if (!adapter) {
+    return fail('No GPU adapter. Driver too old, GPU too weak, or blocked by policy.');
+  }
+
+  const device = await adapter.requestDevice();
+  device.addEventListener?.('uncapturederror', (ev) => {
+    console.error('[WebGPU]', ev.error?.message ?? ev.error);
+  });
+
+  const ctx    = canvas.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  // COPY_DST because the finished river bed is copied into every frame.
+  ctx.configure({
+    device, format, alphaMode: 'opaque',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+  });
+
+  const computeModule = device.createShaderModule({ code: SHADER, label: 'sph-compute' });
+  const scanModule    = device.createShaderModule({ code: SCAN_SHADER, label: 'sph-scan' });
+  const renderModule  = device.createShaderModule({ code: RENDER_SHADER, label: 'sph-render' });
+  const surfaceModule = device.createShaderModule({ code: SURFACE_SHADER, label: 'sph-surface' });
+
+  // Show compile errors instead of a black screen
+  for (const [name, mod] of [['compute', computeModule], ['scan', scanModule],
+                             ['render', renderModule], ['surface', surfaceModule]]) {
+    const info = await mod.getCompilationInfo();
+    const errs = info.messages.filter((m) => m.type === 'error');
+    if (errs.length) {
+      console.error(`WGSL (${name}):`, errs);
+      return fail(`WGSL error in ${name}: ${errs[0].message} (line ${errs[0].lineNum})`);
+    }
+  }
+
+  // Binding 0 is the parameters, with a dynamic offset: each substep of a
+  // frame reads its own parameter set from the same buffer. The source needs
+  // this, because whether a layer enters changes from substep to substep.
+  const computeBGL = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: PARAMS_BYTES } },
+      ...[1, 2, 3, 4, 5, 6, 7, 8].map((binding) => ({
+        binding, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' },
+      })),
+    ],
+  });
+
+  const scanBGL = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+    ],
+  });
+
+  const BOTH = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
+  const renderBGL = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: BOTH, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: BOTH, buffer: { type: 'uniform' } },
+      { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+    ],
+  });
+
+  const computeLayout = device.createPipelineLayout({ bindGroupLayouts: [computeBGL] });
+  const renderLayout  = device.createPipelineLayout({ bindGroupLayouts: [renderBGL] });
+
+  const PASSES = ['externalForces', 'clearGrid', 'countCells', 'sortParticles',
+                  'computeDensity', 'computeForces', 'integrate'];
+  const pipelines = {};
+  for (const entryPoint of PASSES) {
+    pipelines[entryPoint] = device.createComputePipeline({
+      layout: computeLayout,
+      compute: { module: computeModule, entryPoint },
+    });
+  }
+  const scanLayout = device.createPipelineLayout({ bindGroupLayouts: [scanBGL] });
+  const scanPipelines = ['scanBlocks', 'scanSupers', 'scanTop', 'scanAdd'].map((entryPoint) =>
+    device.createComputePipeline({ layout: scanLayout, compute: { module: scanModule, entryPoint } }));
+
+  const depthStencil = { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' };
+  const bedPipeline = device.createRenderPipeline({
+    layout: renderLayout,
+    vertex:   { module: renderModule, entryPoint: 'bedVs' },
+    fragment: { module: renderModule, entryPoint: 'bedFs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' },
+    depthStencil,
+  });
+  const pointPipeline = device.createRenderPipeline({
+    layout: renderLayout,
+    vertex:   { module: renderModule, entryPoint: 'vs' },
+    fragment: { module: renderModule, entryPoint: 'fs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' },
+    depthStencil,
+  });
+
+  // Water surface (M3). Depth as r32float (precise enough for the normals),
+  // thickness as r16float (can be blended additively).
+  const ADD = { srcFactor: 'one', dstFactor: 'one', operation: 'add' };
+  const surfDepthPipeline = device.createRenderPipeline({
+    layout: renderLayout,
+    vertex:   { module: renderModule, entryPoint: 'surfVs' },
+    fragment: { module: renderModule, entryPoint: 'depthFs', targets: [{ format: 'r32float' }] },
+    primitive: { topology: 'triangle-list' },
+    depthStencil,
+  });
+  const surfThickPipeline = device.createRenderPipeline({
+    layout: renderLayout,
+    vertex:   { module: renderModule, entryPoint: 'surfVs' },
+    fragment: { module: renderModule, entryPoint: 'thickFs',
+                targets: [{ format: 'r16float', blend: { color: ADD, alpha: ADD } }] },
+    primitive: { topology: 'triangle-list' },
+    // test only against the river bed, not against other particles
+    depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },
+  });
+
+  const texEntry = (binding, sampleType) =>
+    ({ binding, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType } });
+  const surfaceBGL = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      texEntry(1, 'unfilterable-float'), texEntry(2, 'unfilterable-float'),
+      texEntry(3, 'unfilterable-float'), texEntry(4, 'float'),
+    ],
+  });
+  const surfaceLayout = device.createPipelineLayout({ bindGroupLayouts: [surfaceBGL] });
+  const blurPipeline = (targetFormat, dirX, dirY, bilateral) => device.createRenderPipeline({
+    layout: surfaceLayout,
+    vertex:   { module: surfaceModule, entryPoint: 'fullVs' },
+    fragment: { module: surfaceModule, entryPoint: 'blurFs', targets: [{ format: targetFormat }],
+                constants: { DIR_X: dirX, DIR_Y: dirY, BILATERAL: bilateral } },
+    primitive: { topology: 'triangle-list' },
+  });
+  const blurZ = [blurPipeline('r32float', 1, 0, 1), blurPipeline('r32float', 0, 1, 1)];
+  const blurT = [blurPipeline('r16float', 1, 0, 0), blurPipeline('r16float', 0, 1, 0)];
+  const compositePipeline = device.createRenderPipeline({
+    layout: surfaceLayout,
+    vertex:   { module: surfaceModule, entryPoint: 'fullVs' },
+    fragment: { module: surfaceModule, entryPoint: 'compositeFs', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' },
+  });
+
+  // ─────────────────────────────────────────────────── World state
+  const paramsBuffer = device.createBuffer({
+    size: PARAMS_STRIDE * MAX_SUBSTEPS,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const paramsHost = new ArrayBuffer(PARAMS_STRIDE * MAX_SUBSTEPS);
+  const pu32 = new Uint32Array(paramsHost);
+  const pf32 = new Float32Array(paramsHost);
+
+  const cameraBuffer = device.createBuffer({
+    size: 160, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const poolStaging = device.createBuffer({
+    size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+  });
+
+  const verifyMode = query.has('verify');
+  const benchMode  = query.has('bench');
+
+  let world = null;   // everything that depends on the particle count
+
+  // Start block for verify mode and benchmark: a lattice of particles.
+  //   'bed'    lies in the trough, following the slope, and dips into the bed below
+  //   'drain'  axis-aligned, with its front face exactly at the grid end (drain).
+  //            The grid ends at gridEndX: the cell count is rounded up, so the
+  //            grid reaches slightly beyond boundsMax.
+  function spawnBlock(state, N, s, kind, compress, velocity, gridEndX) {
+    const nz = Math.max(1, Math.floor(1.4 / s));
+    const ny = Math.max(1, Math.floor(0.5 / s));
+    const nx = Math.ceil(N / (nz * ny));
+    const bed = kind === 'bed';
+    const t = bed ? [COS_A, -SIN_A] : [1, 0];
+    const u = bed ? [SIN_A,  COS_A] : [0, 1];
+    const o = bed
+      ? [SCENE.origin[0] + t[0] * 0.4 + u[0] * -0.5, SCENE.origin[1] + t[1] * 0.4 + u[1] * -0.5]
+      : [gridEndX - nx * s, 0.4];
+    const jitter = () => (Math.random() - 0.5) * s * 0.25;
+    const mid = [nx * s / 2, ny * s / 2];
+
+    for (let i = 0; i < N; i++) {
+      const ix = Math.floor(i / (nz * ny)), rem = i % (nz * ny);
+      const iy = Math.floor(rem / nz), iz = rem % nz;
+      const a = mid[0] + ((ix + 0.5) * s + jitter() - mid[0]) * compress;
+      const b = mid[1] + ((iy + 0.5) * s + jitter() - mid[1]) * compress;
+      const z = ((iz + 0.5 - nz / 2) * s + jitter()) * compress;
+      state.set([o[0] + t[0] * a + u[0] * b, o[1] + t[1] * a + u[1] * b, z, 0,
+                 velocity[0], velocity[1], velocity[2], 0], i * 8);
+    }
+  }
+
+  // Without options the river starts empty: all particles are parked and enter
+  // through the source. The options are only for verify mode and benchmark:
+  //   block         start block, see spawnBlock
+  //   compress < 1  squeezes the start block together
+  //   shuffle       renumbers the particles randomly (same positions)
+  //   velocity      initial velocity of all particles
+  function buildWorld(numParticles,
+                      { block = null, compress = 1, shuffle = false, velocity = [0, 0, 0] } = {}) {
+    world?.buffers.forEach((b) => b.destroy());
+
+    // The particle spacing follows from the nominal volume: N particles fill SCENE.volume.
+    const spacing = Math.cbrt(SCENE.volume / numParticles);
+    const h    = spacing * H_RATIO;
+    const mass = 1.0;
+    const targetDensity = restDensity(h, spacing, mass);
+
+    const { boundsMin, boundsMax } = SCENE;
+    const gridDim   = [0, 1, 2].map((k) => Math.max(1, Math.ceil((boundsMax[k] - boundsMin[k]) / h)));
+    const cellCount = gridDim[0] * gridDim[1] * gridDim[2];
+    const binCount  = cellCount + 1;   // all cells plus the bin for particles outside
+
+    // Inlet lattice, centred in the rectangle
+    const inletNz = Math.max(1, Math.floor((SCENE.inlet.zMax - SCENE.inlet.zMin) / spacing));
+    const inletNy = Math.max(1, Math.floor((SCENE.inlet.yMax - SCENE.inlet.yMin) / spacing));
+    const inlet = {
+      nz: inletNz, ny: inletNy, layer: inletNz * inletNy,
+      y0: 0.5 * (SCENE.inlet.yMin + SCENE.inlet.yMax) - 0.5 * inletNy * spacing,
+      z0: 0.5 * (SCENE.inlet.zMin + SCENE.inlet.zMax) - 0.5 * inletNz * spacing,
+    };
+
+    // Eight numbers per particle: position (x, y, z, -) and velocity (x, y, z, -).
+    // vec3f takes 16 bytes in WGSL; the fourth number is padding each time.
+    const state = new Float32Array(numParticles * 8);
+    if (block) {
+      spawnBlock(state, numParticles, spacing, block, compress, velocity,
+                 boundsMin[0] + gridDim[0] * h);
+    } else {
+      for (let i = 0; i < numParticles; i++) state.set(boundsMin.map((v) => v - 100), i * 8);
+    }
+    if (shuffle) {
+      for (let i = numParticles - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        for (let k = 0; k < 8; k++) {
+          const t = state[i * 8 + k]; state[i * 8 + k] = state[j * 8 + k]; state[j * 8 + k] = t;
+        }
+      }
+    }
+
+    // COPY_SRC so verify mode can read the buffers back
+    const mk = (size) => device.createBuffer({
+      size,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+
+    const particles       = mk(numParticles * 32);
+    const predicted       = mk(numParticles * 16);
+    const cellCounts      = mk(binCount * 4);
+    const cellOffsets     = mk(binCount * 4);
+    const sortedParticles = mk(numParticles * 32);
+    const neighborPos     = mk(numParticles * 16);
+    const neighborVel     = mk(numParticles * 16);
+    const sortedIndices   = mk(numParticles * 4);
+
+    device.queue.writeBuffer(particles, 0, state);
+
+    // Prefix sum as a block scan: reads the counters, writes the sums to
+    // cellOffsets and needs one sum per block and per super block for that.
+    const scanBlocks  = Math.ceil(binCount / SCAN_BLOCK);
+    const scanSupers  = Math.ceil(scanBlocks / SCAN_BLOCK);
+    const blockSums   = mk(scanBlocks * 4);
+    const superSums   = mk(scanSupers * 4);
+    const scanUniform = device.createBuffer({
+      size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(scanUniform, 0, new Uint32Array([binCount, scanBlocks, scanSupers, 0]));
+    const scanBindGroup = device.createBindGroup({
+      layout: scanBGL,
+      entries: [scanUniform, cellCounts, cellOffsets, blockSums, superSums]
+        .map((buffer, binding) => ({ binding, resource: { buffer } })),
+    });
+
+    const buffers = [particles, predicted, cellCounts, cellOffsets, blockSums, superSums, scanUniform,
+                     sortedParticles, neighborPos, neighborVel, sortedIndices];
+
+    // order = binding numbers in the shader
+    const computeBindGroup = device.createBindGroup({
+      layout: computeBGL,
+      entries: [
+        { binding: 0, resource: { buffer: paramsBuffer, offset: 0, size: PARAMS_BYTES } },
+        ...[particles, predicted, cellCounts, cellOffsets,
+            sortedParticles, neighborPos, neighborVel, sortedIndices,
+        ].map((buffer, k) => ({ binding: k + 1, resource: { buffer } })),
+      ],
+    });
+
+    const renderBindGroup = device.createBindGroup({
+      layout: renderBGL,
+      entries: [
+        { binding: 0, resource: { buffer: paramsBuffer, offset: 0, size: PARAMS_BYTES } },
+        { binding: 1, resource: { buffer: cameraBuffer } },
+        { binding: 2, resource: { buffer: particles } },
+      ],
+    });
+
+    world = {
+      numParticles, h, mass, spacing, targetDensity,
+      gridDim, cellCount, binCount, inlet,
+      boundsMin, boundsMax,
+      particleRadius: spacing * 0.5,
+      emitter: makeEmitter(spacing, inlet.layer),
+      buffers, computeBindGroup, renderBindGroup, scanBindGroup, scanBlocks, scanSupers,
+      named: { particles, predicted, cellCounts, cellOffsets,
+               sortedParticles, neighborPos, sortedIndices },
+    };
+
+    el('n').textContent = numParticles.toLocaleString('en-US');
+    el('active').textContent = '–';
+    console.log('[sph]', {
+      numParticles, spacing: +spacing.toFixed(4), h: +h.toFixed(4),
+      targetDensity: +targetDensity.toFixed(2), grid: gridDim.join('x'), cells: cellCount,
+      scanBlocks, inletLayer: inlet.layer,
+    });
+  }
+
+  // ───────────────────────────────────────────────────────── Camera
+  // Fixed, as in the target image: one viewpoint, no controls.
+  const camera = { eye: [1.2, 4.3, 9.2], target: [-0.2, -0.75, 0], tanHalfH: Math.tan(30 * PI / 180) };
+  // The camera is fixed, so the river bed looks the same in every frame.
+  // It is therefore rendered only once (colour and depth) and then copied
+  // into every frame. ?bedcache=0 turns this off and re-renders it each time.
+  const BED_CACHE = query.get('bedcache') !== '0';
+
+  // Water surface (M3). ?points starts in the point view.
+  const SURF_RADIUS  = 0.9;   // sphere radius in particle spacings: the spheres overlap
+  const BLUR_SIGMA_Z = 2.0;   // depth difference in particle spacings beyond which the filter separates
+  // On Retina displays the water textures have half the resolution of the frame
+  // (i.e. that of CSS pixels): a quarter of the pixels for the filter. ?fs=1 forces full.
+  const FLUID_SCALE = parseFloat(query.get('fs') ?? ((devicePixelRatio || 1) >= 1.5 ? '0.5' : '1'));
+  let pointsMode = query.has('points');
+  let surf = { scale: FLUID_SCALE, textures: [] };
+  let viewport = [1, 1];
+  let depthTexture = null, bedColor = null, bedDepth = null, bedReady = false;
+
+  function resizeCanvas() {
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    canvas.width  = Math.max(1, Math.floor(canvas.clientWidth  * dpr));
+    canvas.height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+    setViewport(canvas.width, canvas.height);
+  }
+
+  function setViewport(width, height) {
+    for (const t of [depthTexture, bedColor, bedDepth]) t?.destroy();
+    const texture = (fmt, usage) => device.createTexture({
+      size: [width, height], format: fmt, usage: GPUTextureUsage.RENDER_ATTACHMENT | usage,
+    });
+    viewport     = [width, height];
+    depthTexture = texture('depth24plus', GPUTextureUsage.COPY_DST);
+    bedColor     = texture(format, GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING);
+    bedDepth     = texture('depth24plus', GPUTextureUsage.COPY_SRC);
+    bedReady     = false;
+
+    // Textures of the water surface, at their own (usually half) resolution.
+    // The bed is rendered a second time, small, for this: its depth hides
+    // the particles behind stones and banks.
+    surf.textures.forEach((t) => t.destroy());
+    const size = [Math.max(1, Math.ceil(width * FLUID_SCALE)), Math.max(1, Math.ceil(height * FLUID_SCALE))];
+    const small = (fmt, usage) => device.createTexture({ size, format: fmt, usage });
+    const RA = GPUTextureUsage.RENDER_ATTACHMENT, TB = GPUTextureUsage.TEXTURE_BINDING;
+    const t = {
+      bedColor: small(format, RA),
+      bedDepth: small('depth24plus', RA | GPUTextureUsage.COPY_SRC),
+      depth:    small('depth24plus', RA | GPUTextureUsage.COPY_DST),
+      zA: small('r32float', RA | TB), zB: small('r32float', RA | TB),
+      tA: small('r16float', RA | TB), tB: small('r16float', RA | TB),
+    };
+    // Bindings: 1 = filter source, 2 = depth, 3 = thickness, 4 = image of the bed
+    // A texture cannot be read and written at the same time: whoever writes
+    // to tA therefore binds tB as thickness.
+    const group = (src, z, thick) => device.createBindGroup({
+      layout: surfaceBGL,
+      entries: [
+        { binding: 0, resource: { buffer: cameraBuffer } },
+        { binding: 1, resource: src.createView() },
+        { binding: 2, resource: z.createView() },
+        { binding: 3, resource: thick.createView() },
+        { binding: 4, resource: bedColor.createView() },
+      ],
+    });
+    surf = {
+      scale: FLUID_SCALE, size, t, textures: Object.values(t),
+      fromZA: group(t.zA, t.zA, t.tA), fromZB: group(t.zB, t.zB, t.tA),
+      fromTA: group(t.tA, t.zA, t.tA), fromTB: group(t.tB, t.zA, t.tB),
+    };
+
+    const aspect = width / height;
+    // The scene is wide: the horizontal field of view is fixed, the vertical
+    // one follows from the aspect ratio (with a lower bound).
+    camera.aspect  = aspect;
+    camera.tanHalf = Math.max(Math.tan(15 * PI / 180), camera.tanHalfH / aspect);
+    camera.back    = norm3(sub3(camera.eye, camera.target));
+    camera.right   = norm3(cross3([0, 1, 0], camera.back));
+    camera.up      = cross3(camera.back, camera.right);
+    camera.forward = camera.back.map((v) => -v);
+  }
+
+  function writeCamera() {
+    const { eye, right, up, back, forward, tanHalf, aspect } = camera;
+    const near = 0.5, far = 60, fy = 1 / tanHalf;
+    // View matrix (world -> camera) and projection (depth 0..1), column-major
+    const view = [
+      right[0], up[0], back[0], 0,
+      right[1], up[1], back[1], 0,
+      right[2], up[2], back[2], 0,
+      -dot3(right, eye), -dot3(up, eye), -dot3(back, eye), 1,
+    ];
+    const proj = [
+      fy / aspect, 0, 0, 0,
+      0, fy, 0, 0,
+      0, 0, far / (near - far), -1,
+      0, 0, near * far / (near - far), 0,
+    ];
+    const data = new Float32Array(40);
+    for (let c = 0; c < 4; c++) {
+      for (let r = 0; r < 4; r++) {
+        let sum = 0;
+        for (let k = 0; k < 4; k++) sum += proj[k * 4 + r] * view[c * 4 + k];
+        data[c * 4 + r] = sum;
+      }
+    }
+    data.set(eye, 16);     data[19] = tanHalf;
+    data.set(right, 20);   data[23] = aspect;
+    data.set(up, 24);      data[27] = world.spacing * 0.55;
+    data.set(forward, 28); data[31] = world.spacing * SURF_RADIUS;
+    data[32] = near;
+    data[33] = far;
+    // Overlapping spheres count the water several times: N spheres per volume
+    // times sphere volume is (4/3)·pi·(radius/s)³ instead of 1. Divide by that.
+    data[34] = 1 / (4 / 3 * PI * SURF_RADIUS ** 3);
+    data[35] = parseFloat(sliders.smooth.value) * world.spacing;
+    data[36] = BLUR_SIGMA_Z * world.spacing;
+    data[37] = surf.scale;
+    data[38] = world.spacing;
+    device.queue.writeBuffer(cameraBuffer, 0, data);
+  }
+
+  // ──────────────────────────────────────────────────── Interaction
+  // The mouse acts where its view ray hits the plane just below the terrain,
+  // i.e. roughly at the water surface.
+  const mouse = { pos: [0, 0, 0], strength: 0 };
+  const MOUSE_RADIUS = 1.0;
+  const PUSH = 160;
+
+  function toWorld(ev) {
+    const r = canvas.getBoundingClientRect();
+    const nx = (ev.clientX - r.left) / r.width * 2 - 1;
+    const ny = 1 - (ev.clientY - r.top) / r.height * 2;
+    const { eye, right, up, forward, tanHalf, aspect } = camera;
+    const dir = [0, 1, 2].map((k) =>
+      forward[k] + right[k] * nx * aspect * tanHalf + up[k] * ny * tanHalf);
+    const normal = [SIN_A, COS_A, 0];
+    const onPlane = [SCENE.origin[0] - 0.3 * SIN_A, SCENE.origin[1] - 0.3 * COS_A, 0];
+    const t = dot3(sub3(onPlane, eye), normal) / dot3(dir, normal);
+    return [0, 1, 2].map((k) => eye[k] + dir[k] * t);
+  }
+
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('pointerdown', (ev) => {
+    mouse.pos = toWorld(ev);
+    mouse.strength = ev.button === 2 ? PUSH : -PUSH;
+    canvas.setPointerCapture(ev.pointerId);
+  });
+  canvas.addEventListener('pointermove', (ev) => {
+    mouse.pos = toWorld(ev);
+  });
+  const release = () => { mouse.strength = 0; };
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointercancel', release);
+  canvas.addEventListener('pointerleave', release);
+
+  // ─────────────────────────────────────────────────────── Sliders
+  const sliders = {
+    gravity: el('gravity'), pressure: el('pressure'),
+    nearp:   el('nearp'),   visc:     el('visc'),
+    inflow:  el('inflow'),  smooth:   el('smooth'),
+  };
+  function syncOutputs() {
+    for (const [name, input] of Object.entries(sliders)) {
+      const out = document.querySelector(`output[for="${name}"]`);
+      const step = parseFloat(input.step);
+      const digits = Math.max(0, -Math.floor(Math.log10(step)));
+      out.textContent = parseFloat(input.value).toFixed(digits);
+    }
+  }
+  Object.values(sliders).forEach((s) => s.addEventListener('input', syncOutputs));
+  syncOutputs();
+
+  el('reset').addEventListener('click', () => buildWorld(world.numParticles));
+  const showMode = () => { el('mode').textContent = pointsMode ? 'Points' : 'Surface'; };
+  el('mode').addEventListener('click', () => { pointsMode = !pointsMode; showMode(); });
+  showMode();
+  el('count').addEventListener('change', (ev) => buildWorld(parseInt(ev.target.value, 10)));
+
+  // In 3D the world no longer depends on the window size: on resize only
+  // frame and camera change, the river keeps running.
+  addEventListener('resize', resizeCanvas);
+
+  resizeCanvas();
+  buildWorld(parseInt(query.get('n') ?? el('count').value, 10));
+
+  // ────────────────────────────────────────────── Parameter upload
+
+  // The sliders are scale-invariant: a value means the same no matter how many
+  // particles are selected. In the momentum-conserving form
+  //   acceleration ~ 2 * k * (dRho / rho0) / h,
+  // so k = slider * h / 2 turns the slider value itself into an acceleration:
+  // "pressure 2000" means 100% compression produces about 2000 units of
+  // counter-acceleration — directly comparable to gravity.
+  const stiffness = (slider) => parseFloat(slider.value) * world.h / 2;
+  const inflow = () => parseFloat(sliders.inflow.value);
+
+  // CFL condition. The speed of sound in the fluid is sqrt(k); a time step in
+  // which a pressure wave travels further than one smoothing length blows up.
+  // So the number of substeps follows the stiffness, instead of capping the
+  // stiffness.
+  function timestep(frameDt) {
+    const c = Math.sqrt(Math.max(stiffness(sliders.pressure), 1e-9));
+    const dtMax = Math.min(1 / 120, 0.25 * world.h / (c + 4));
+    const substeps = Math.max(1, Math.min(MAX_SUBSTEPS, Math.ceil(frameDt / dtMax)));
+    return { substeps, dt: frameDt / substeps, limited: frameDt / substeps > dtMax };
+  }
+
+  // Writes the parameter set for one substep. slot picks the place in the
+  // parameter buffer; emit says whether a layer enters in this substep.
+  function fillParams(slot, dt, emit = NO_EMIT) {
+    const w = world;
+    const o = slot * PARAMS_STRIDE / 4;
+    pu32[o + 0] = w.numParticles;
+    pu32[o + 1] = emit.count;
+    pu32[o + 2] = w.inlet.nz;
+    pu32[o + 3] = w.cellCount;
+    pu32.set(w.gridDim, o + 4);
+    pf32[o + 8]  = dt;
+    pf32[o + 9]  = parseFloat(sliders.gravity.value);
+    pf32[o + 10] = w.h;
+    pf32[o + 11] = w.targetDensity;
+    pf32[o + 12] = stiffness(sliders.pressure);
+    pf32[o + 13] = stiffness(sliders.nearp);
+    // 3D: the kernel sum is about 1/s³ (in 2D it was 1/s²)
+    pf32[o + 14] = parseFloat(sliders.visc.value) * w.spacing ** 3;
+    pf32[o + 15] = w.mass;
+    pf32.set(w.boundsMin, o + 16);
+    pf32[o + 19] = w.particleRadius;
+    pf32.set(w.boundsMax, o + 20);
+    pf32[o + 23] = WALL_DAMPING;      // damping on impact with the bed
+    pf32.set(mouse.pos, o + 24);
+    pf32[o + 27] = MOUSE_RADIUS;
+    pf32[o + 28] = mouse.strength;
+    pf32[o + 29] = 30.0;              // velocity cap (stability net)
+    pf32[o + 30] = w.spacing;
+    pf32[o + 31] = inflow();
+    pf32[o + 32] = emit.along;
+    pf32[o + 33] = emit.stagger;
+    pf32[o + 34] = w.inlet.y0;
+    pf32[o + 35] = w.inlet.z0;
+    // Prefactors of the 3D kernels (each kernel integrates to 1 over the sphere)
+    pf32[o + 36] = 15 / (2 * PI * w.h ** 5);        // W2
+    pf32[o + 37] = 15 / (PI * w.h ** 5);            // derivative of W2
+    pf32[o + 38] = 15 / (PI * w.h ** 6);            // W3
+    pf32[o + 39] = 45 / (PI * w.h ** 6);            // derivative of W3
+    pf32[o + 40] = 315 / (64 * PI * w.h ** 9);      // Wvisc
+  }
+  const uploadParams = (slots = 1) =>
+    device.queue.writeBuffer(paramsBuffer, 0, paramsHost, 0, slots * PARAMS_STRIDE);
+
+  // ─────────────────────────────────────────────────────────── Loop
+  const groups = (n) => Math.ceil(n / WORKGROUP);
+
+  // One physics step: all compute passes in fixed order.
+  // 'scan' stands for the passes of the prefix sum, everything else is an entry point.
+  const SUBSTEP = ['externalForces', 'clearGrid', 'countCells', 'scan', 'sortParticles',
+                   'computeDensity', 'computeForces', 'integrate'];
+
+  function encodePasses(pass, names, slot = 0) {
+    const perParticle = groups(world.numParticles);
+    const perBin      = groups(world.binCount);
+
+    for (const name of names) {
+      if (name === 'scan') {
+        pass.setBindGroup(0, world.scanBindGroup);
+        pass.setPipeline(scanPipelines[0]);
+        pass.dispatchWorkgroups(groups(world.scanBlocks));
+        pass.setPipeline(scanPipelines[1]);
+        pass.dispatchWorkgroups(groups(world.scanSupers));
+        pass.setPipeline(scanPipelines[2]);
+        pass.dispatchWorkgroups(1);
+        pass.setPipeline(scanPipelines[3]);
+        pass.dispatchWorkgroups(perBin);
+        continue;
+      }
+      pass.setBindGroup(0, world.computeBindGroup, [slot * PARAMS_STRIDE]);
+      pass.setPipeline(pipelines[name]);
+      pass.dispatchWorkgroups(name === 'clearGrid' ? perBin : perParticle);
+    }
+  }
+
+  // How many particles are in the river? The bin for outside counts the pool;
+  // that one number is read back every half second.
+  let poolPending = false;
+  function pollPool() {
+    if (poolPending) return;
+    poolPending = true;
+    const w = world;
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(w.named.cellCounts, w.cellCount * 4, poolStaging, 0, 4);
+    device.queue.submit([enc.finish()]);
+    poolStaging.mapAsync(GPUMapMode.READ).then(() => {
+      const pool = new Uint32Array(poolStaging.getMappedRange())[0];
+      poolStaging.unmap();
+      poolPending = false;
+      if (w === world) el('active').textContent = (w.numParticles - pool).toLocaleString('en-US');
+    });
+  }
+
+  const CLEAR = { r: 0.02, g: 0.027, b: 0.051, a: 1 };
+
+  // One frame: the river bed (one triangle over the whole screen), then the
+  // particles. The depth buffer decides per pixel what is in front.
+  function encodeRender(enc, colorTexture) {
+    if (!BED_CACHE) {
+      const rp = enc.beginRenderPass({
+        colorAttachments: [{
+          view: colorTexture.createView(), loadOp: 'clear', storeOp: 'store', clearValue: CLEAR,
+        }],
+        depthStencilAttachment: {
+          view: depthTexture.createView(), depthClearValue: 1,
+          depthLoadOp: 'clear', depthStoreOp: 'discard',
+        },
+      });
+      rp.setBindGroup(0, world.renderBindGroup);
+      rp.setPipeline(bedPipeline);
+      rp.draw(3);
+      rp.setPipeline(pointPipeline);
+      rp.draw(6, world.numParticles);
+      rp.end();
+      return;
+    }
+
+    // Render the bed once into its own textures (after every resize):
+    // at full resolution for the frame and small for the water surface.
+    if (!bedReady) {
+      for (const [color, depth] of [[bedColor, bedDepth], [surf.t.bedColor, surf.t.bedDepth]]) {
+        const rp = enc.beginRenderPass({
+          colorAttachments: [{
+            view: color.createView(), loadOp: 'clear', storeOp: 'store', clearValue: CLEAR,
+          }],
+          depthStencilAttachment: {
+            view: depth.createView(), depthClearValue: 1,
+            depthLoadOp: 'clear', depthStoreOp: 'store',
+          },
+        });
+        rp.setBindGroup(0, world.renderBindGroup);
+        rp.setPipeline(bedPipeline);
+        rp.draw(3);
+        rp.end();
+      }
+      bedReady = true;
+    }
+
+    if (pointsMode) {
+      // Every frame starts as a copy of the bed, colour and depth. The particles
+      // go on top; the copied depth hides them behind stones and banks.
+      enc.copyTextureToTexture({ texture: bedColor }, { texture: colorTexture }, viewport);
+      enc.copyTextureToTexture({ texture: bedDepth }, { texture: depthTexture }, viewport);
+      const rp = enc.beginRenderPass({
+        colorAttachments: [{ view: colorTexture.createView(), loadOp: 'load', storeOp: 'store' }],
+        depthStencilAttachment: {
+          view: depthTexture.createView(), depthLoadOp: 'load', depthStoreOp: 'discard',
+        },
+      });
+      rp.setBindGroup(0, world.renderBindGroup);
+      rp.setPipeline(pointPipeline);
+      rp.draw(6, world.numParticles);
+      rp.end();
+      return;
+    }
+
+    // ── Screen-space water surface
+    const t = surf.t;
+    const colorTarget = (texture, clearValue) =>
+      ({ view: texture.createView(), loadOp: 'clear', storeOp: 'store', clearValue });
+
+    // 1. Depth: the frontmost sphere surface per pixel. Cleared with 1e9
+    //    ("no water"); the depth buffer starts as a copy of the bed depth.
+    enc.copyTextureToTexture({ texture: t.bedDepth }, { texture: t.depth }, surf.size);
+    let rp = enc.beginRenderPass({
+      colorAttachments: [colorTarget(t.zA, { r: 1e9, g: 0, b: 0, a: 1 })],
+      depthStencilAttachment: {
+        view: t.depth.createView(), depthLoadOp: 'load', depthStoreOp: 'discard',
+      },
+    });
+    rp.setBindGroup(0, world.renderBindGroup);
+    rp.setPipeline(surfDepthPipeline);
+    rp.draw(6, world.numParticles);
+    rp.end();
+
+    // 4. Thickness: all spheres added up, hidden only by the bed (whose depth
+    //    is only read here).
+    rp = enc.beginRenderPass({
+      colorAttachments: [colorTarget(t.tA, { r: 0, g: 0, b: 0, a: 0 })],
+      depthStencilAttachment: { view: t.bedDepth.createView(), depthReadOnly: true },
+    });
+    rp.setBindGroup(0, world.renderBindGroup);
+    rp.setPipeline(surfThickPipeline);
+    rp.draw(6, world.numParticles);
+    rp.end();
+
+    // 2. Smoothing: horizontally from A to B, vertically from B back to A.
+    //    Depth twice (edge-preserving), thickness once (plain Gauss).
+    const filter = (pipeline, group, target) => {
+      const pass = enc.beginRenderPass({ colorAttachments: [colorTarget(target, { r: 0, g: 0, b: 0, a: 0 })] });
+      pass.setBindGroup(0, group);
+      pass.setPipeline(pipeline);
+      pass.draw(3);
+      pass.end();
+    };
+    for (let k = 0; k < 2; k++) {
+      filter(blurZ[0], surf.fromZA, t.zB);
+      filter(blurZ[1], surf.fromZB, t.zA);
+    }
+    filter(blurT[0], surf.fromTA, t.tB);
+    filter(blurT[1], surf.fromTB, t.tA);
+
+    // 3. Compositing: normals from the smoothed depth, colour from the
+    //    thickness, behind it the image of the bed.
+    rp = enc.beginRenderPass({ colorAttachments: [colorTarget(colorTexture, CLEAR)] });
+    rp.setBindGroup(0, surf.fromZA);
+    rp.setPipeline(compositePipeline);
+    rp.draw(3);
+    rp.end();
+  }
+
+  let last = performance.now();
+  let fpsAccum = 0, fpsFrames = 0, msAccum = 0;
+
+  function frame(now) {
+    const wall = now - last;
+    last = now;
+
+    const t0 = performance.now();
+    // Real frame time instead of a fixed 1/60 s. Otherwise the simulation advances
+    // by 1/60 s per frame no matter how fast frames arrive. Capped so that a
+    // hitch does not blow up the physics.
+    const frameDt = Math.min(Math.max(wall / 1000, 1 / 240), 1 / 30);
+    const { substeps, dt, limited } = timestep(frameDt);
+    for (let s = 0; s < substeps; s++) fillParams(s, dt, world.emitter(dt, inflow()));
+    uploadParams(substeps);
+    writeCamera();
+
+    const enc = device.createCommandEncoder();
+
+    for (let s = 0; s < substeps; s++) {
+      const pass = enc.beginComputePass();
+      encodePasses(pass, SUBSTEP, s);
+      pass.end();
+    }
+
+    encodeRender(enc, ctx.getCurrentTexture());
+
+    device.queue.submit([enc.finish()]);
+
+    msAccum += performance.now() - t0;
+    fpsAccum += wall; fpsFrames++;
+    if (fpsAccum >= 500) {
+      el('fps').textContent = (1000 * fpsFrames / fpsAccum).toFixed(0);
+      el('ms').textContent  = (msAccum / fpsFrames).toFixed(2);
+      el('sub').textContent = substeps + (limited ? '!' : '');
+      el('sub').style.color = limited ? '#e07a5f' : '';
+      fpsAccum = 0; fpsFrames = 0; msAccum = 0;
+      pollPool();
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // Simulates a time span without rendering, with the source running (for the benchmark).
+  async function simulate(seconds) {
+    const dt = timestep(1 / 240).dt;
+    let left = Math.ceil(seconds / dt), chunks = 0;
+    while (left > 0) {
+      const n = Math.min(MAX_SUBSTEPS, left);
+      for (let s = 0; s < n; s++) fillParams(s, dt, world.emitter(dt, inflow()));
+      uploadParams(n);
+      const enc = device.createCommandEncoder();
+      for (let s = 0; s < n; s++) {
+        const pass = enc.beginComputePass();
+        encodePasses(pass, SUBSTEP, s);
+        pass.end();
+      }
+      device.queue.submit([enc.finish()]);
+      left -= n;
+      if (++chunks % 8 === 0) await device.queue.onSubmittedWorkDone();
+    }
+    await device.queue.onSubmittedWorkDone();
+  }
+
+  // ─────────────────────────────────────────────────── Verify mode
+  // fluid.html?verify compares the GPU with cpu_ref.mjs. Before each step the
+  // CPU reference gets the state of the GPU, then both compute exactly one
+  // step. That way each step is checked on its own; over many steps rounding
+  // differences would amplify in a chaotic simulation.
+  async function readback(buffer, Type) {
+    const staging = device.createBuffer({
+      size: buffer.size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(buffer, 0, staging, 0, buffer.size);
+    device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const data = new Type(staging.getMappedRange().slice(0));
+    staging.destroy();
+    return data;
+  }
+
+  function gpuStep(dt, emit = NO_EMIT) {
+    fillParams(0, dt, emit);
+    uploadParams();
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    encodePasses(pass, SUBSTEP);
+    pass.end();
+    device.queue.submit([enc.finish()]);
+  }
+
+  // Counts errors in the data structure. All of it can be checked exactly:
+  //   - the bin starts are the prefix sum of the counters,
+  //   - every particle has exactly one slot,
+  //   - the slot holds its own data unchanged,
+  //   - the slot belongs to the bin the particle lies in.
+  function gridErrors(counts, offsets, sorted, sortedPred, pred) {
+    const w = world;
+    const [gx, gy, gz] = w.gridDim;
+    const EPS = 1e-3;   // tolerance in cell widths for f32 rounding at the cell boundary
+    let errors = 0, sum = 0;
+    const seen = new Uint8Array(w.numParticles);
+
+    for (let c = 0; c < w.binCount; c++) {
+      if (offsets[c] !== sum) errors++;
+      const lo = [c % gx, Math.floor(c / gx) % gy, Math.floor(c / (gx * gy))];
+      for (let k = sum; k < sum + counts[c]; k++) {
+        const j = sorted[k];
+        if (!(j < w.numParticles) || seen[j]) { errors++; continue; }
+        seen[j] = 1;
+        let same = true, inCell = true, clearlyInside = true;
+        for (let a = 0; a < 3; a++) {
+          if (sortedPred[4 * k + a] !== pred[4 * j + a]) same = false;
+          const x = (pred[4 * j + a] - w.boundsMin[a]) / w.h;
+          if (x < lo[a] - EPS || x > lo[a] + 1 + EPS) inCell = false;
+          if (x < EPS || x > w.gridDim[a] - EPS) clearlyInside = false;
+        }
+        if (!same) errors++;
+        if (c < w.cellCount ? !inCell : clearlyInside) errors++;
+      }
+      sum += counts[c];
+    }
+    if (sum !== w.numParticles) errors++;
+    return errors;
+  }
+
+  async function runVerify() {
+    const out = el('verify');
+    out.style.display = 'block';
+    const print = (line = '') => { out.textContent += line + '\n'; console.log(line); };
+
+    // Lock sliders and mouse: the GPU reads both live, the CPU reference does not.
+    el('ui').style.pointerEvents = 'none';
+    canvas.style.pointerEvents = 'none';
+
+    let ref;
+    try {
+      // With a timestamp so the browser never takes an old reference from the cache.
+      ref = await import(`./cpu_ref.mjs?t=${Date.now()}`);
+    } catch (e) {
+      print('cpu_ref.mjs could not be loaded. Verify mode needs a local server:');
+      print('  python3 -m http.server 8123');
+      print('  http://localhost:8123/fluid.html?verify');
+      return;
+    }
+
+    const N = world.numParticles;
+    const TOL_DENSITY = 1e-4;    // relative
+    const TOL_VELOCITY = 1e-2;   // absolute; the velocity cap is 30
+    const TOL_POSITION = 1e-4;   // absolute; the box is about 10 long
+    // With viscosity > 0, computeForces reads velocities that other threads are
+    // overwriting in the same pass. The result then depends on thread order,
+    // so velocity and position are only reported there.
+    // 'Block': lattice of particles in the trough whose lower edges are stuck in
+    //   the bed and the stones, flying downwards: checks the collision.
+    // 'drain': the block flies out past the grid end, the frontmost layer
+    //   lands in the pool, and in the same step a layer enters at the inlet.
+    //   Only one step: there every particle is clearly inside or clearly
+    //   outside. Later one could sit so close to the edge that f32 and f64
+    //   round differently.
+    // 'source': all particles parked, each step inserts a layer, the
+    //   frontmost first, so that a stack with the right spacing forms.
+    const scenarios = [
+      { name: 'Block',       visc: 0,  steps: 6, block: 'bed', velocity: [0, -3, 0] },
+      { name: 'compressed',  visc: 0,  steps: 6, block: 'bed', compress: 0.5 },
+      { name: 'drain',       visc: 0,  steps: 1, block: 'drain', velocity: [20, 0, 0],
+        emit: (w) => ({ count: w.inlet.layer, along: 0, stagger: 0.25 }) },
+      { name: 'source',      visc: 0,  steps: 6,
+        emit: (w, step) => ({ count: w.inlet.layer, along: (5 - step) * w.spacing,
+                              stagger: step % 2 ? 0.25 : -0.25 }) },
+      { name: 'compressed',  visc: 20, steps: 6, block: 'bed', compress: 0.5 },
+    ];
+
+    print(`Check against cpu_ref.mjs (3D) · ${N} particles · h = ${H_RATIO} s · every step compared individually`);
+    print();
+    print('Scenario     visc     steps   max/cell     pool   at bed  rho/rho0   grid errors'
+      + ' density rel. velocity abs.  position abs.');
+    print('-'.repeat(124));
+
+    const results = [];
+    for (const sc of scenarios) {
+      sliders.visc.value = sc.visc;
+      syncOutputs();
+      buildWorld(N, { block: sc.block, compress: sc.compress, velocity: sc.velocity });
+      const w = world;
+      const dt = timestep(1 / 240).dt;
+      const cpu = ref.makeSim({
+        N, scene: SCENE, hRatio: H_RATIO,
+        pressure: parseFloat(sliders.pressure.value),
+        nearPressure: parseFloat(sliders.nearp.value),
+        viscosity: sc.visc,
+        gravity: parseFloat(sliders.gravity.value),
+        restitution: WALL_DAMPING,
+        inflow: inflow(),
+        inPlace: VISC_IN_PLACE,
+        dt,
+      });
+      if (Math.abs(cpu.h - w.h) > 1e-9 * w.h || Math.abs(cpu.rho0 - w.targetDensity) > 1e-9 * cpu.rho0
+          || cpu.layout.cellCount !== w.cellCount || cpu.layout.inlet.layer !== w.inlet.layer) {
+        print('ABORTED: CPU reference and GPU use a different h, rho0 or grid.');
+        return;
+      }
+      const { sdf } = ref.makeSdf(SCENE);
+
+      const res = { ...sc, maxPerCell: 0, pool: 0, contact: 0, maxRho: 0,
+                    grid: 0, density: 0, velocity: 0, position: 0 };
+      for (let step = 0; step < sc.steps; step++) {
+        // hand the GPU state to the CPU reference
+        const before = await readback(w.named.particles, Float32Array);
+        const pos = new Float32Array(3 * N), vel = new Float32Array(3 * N);
+        for (let i = 0; i < N; i++) {
+          for (let a = 0; a < 3; a++) {
+            pos[3 * i + a] = before[8 * i + a];
+            vel[3 * i + a] = before[8 * i + 4 + a];
+          }
+        }
+        cpu.setState(pos, vel);
+
+        const emit = sc.emit ? sc.emit(w, step) : NO_EMIT;
+        gpuStep(dt, emit);
+
+        const [after, gDen, counts, offsets, sorted, sortedPred, pred] = await Promise.all([
+          readback(w.named.particles, Float32Array),
+          readback(w.named.sortedParticles, Float32Array),
+          readback(w.named.cellCounts, Uint32Array),
+          readback(w.named.cellOffsets, Uint32Array),
+          readback(w.named.sortedIndices, Uint32Array),
+          readback(w.named.neighborPos, Float32Array),
+          readback(w.named.predicted, Float32Array),
+        ]);
+
+        // Who gets which rank in the pool is down to chance on the GPU. The CPU
+        // adopts the ranks; who belongs in the pool it determines itself.
+        const poolRank = new Int32Array(N).fill(-1);
+        const poolStart = offsets[w.cellCount], poolSize = counts[w.cellCount];
+        for (let k = 0; k < poolSize; k++) poolRank[sorted[poolStart + k]] = k;
+        cpu.step(emit, poolRank);
+
+        res.grid += gridErrors(counts, offsets, sorted, sortedPred, pred);
+        for (let c = 0; c < w.cellCount; c++) res.maxPerCell = Math.max(res.maxPerCell, counts[c]);
+        res.pool = Math.max(res.pool, poolSize);
+
+        // The GPU has re-sorted: slot k now holds the particle that had the
+        // number sorted[k] before the step.
+        const { px, py, pz, vx, vy, vz, den, cell } = cpu.state;
+        let contact = 0;
+        for (let k = 0; k < N; k++) {
+          const i = sorted[k];
+          if ((cell[i] < 0) !== (poolRank[i] >= 0)) res.grid++;   // pool: GPU and CPU disagree
+          res.maxRho   = Math.max(res.maxRho, den[i] / cpu.rho0);
+          res.density  = Math.max(res.density,
+            Math.abs(gDen[8 * k + 3] - den[i]) / Math.max(den[i], cpu.rho0));
+          res.velocity = Math.max(res.velocity,
+            Math.hypot(after[8 * k + 4] - vx[i], after[8 * k + 5] - vy[i], after[8 * k + 6] - vz[i]));
+          res.position = Math.max(res.position,
+            Math.hypot(after[8 * k] - px[i], after[8 * k + 1] - py[i], after[8 * k + 2] - pz[i]));
+          if (cell[i] >= 0 && sdf(px[i], py[i], pz[i]) < w.particleRadius * 1.001) contact++;
+        }
+        res.contact = Math.max(res.contact, contact);
+      }
+
+      // With the race, viscosity > 0 is not deterministic and is only reported.
+      const strict = sc.visc === 0 || !VISC_IN_PLACE;
+      res.ok = res.grid === 0 && res.density < TOL_DENSITY
+            && (!strict || (res.velocity < TOL_VELOCITY && res.position < TOL_POSITION));
+      results.push(res);
+      print(sc.name.padEnd(12) + String(sc.visc).padStart(5) + String(sc.steps).padStart(10)
+        + String(res.maxPerCell).padStart(11) + String(res.pool).padStart(9)
+        + String(res.contact).padStart(9) + res.maxRho.toFixed(2).padStart(10)
+        + String(res.grid).padStart(14) + res.density.toExponential(1).padStart(13)
+        + res.velocity.toExponential(1).padStart(14)
+        + res.position.toExponential(1).padStart(15) + (strict ? '' : ' *')
+        + '   ' + (res.ok ? 'OK' : 'FAIL'));
+    }
+
+    print();
+    print('pool = particles in the bin for outside, at bed = particles in contact with the SDF');
+    print('* reported only, not judged (thread order, see the comment in the code)');
+    print(`Tolerances: density ${TOL_DENSITY}, velocity ${TOL_VELOCITY}, position ${TOL_POSITION}`);
+    print(results.every((r) => r.ok) ? 'RESULT: everything matches.' : 'RESULT: deviations, see above.');
+    window.__verify = results;
+  }
+
+  // ──────────────────────────────────────────────────── Benchmark
+  // fluid.html?bench measures milliseconds per substep, independent of frame rate
+  // and display limit: submit a fixed number of substeps and wait until the GPU
+  // is done. With dt = 0 and no source the state stays frozen, the work is the
+  // same as in a real step, and every run measures the same thing. The groups
+  // run separately, so their sum is only roughly 'Total'.
+  const BENCH_GROUPS = [
+    ['Total',   SUBSTEP],
+    ['Scan',    ['scan']],
+    ['Grid',    ['clearGrid', 'countCells', 'scan', 'sortParticles']],
+    ['Density', ['computeDensity']],
+    ['Forces',  ['computeForces']],
+  ];
+
+  // How dense is the water? Density relative to rest density, the fullest cell
+  // and the number of particles in the river.
+  async function benchDensity() {
+    const [den, counts] = await Promise.all([
+      readback(world.named.sortedParticles, Float32Array),
+      readback(world.named.cellCounts, Uint32Array),
+    ]);
+    let sum = 0, max = 0, maxPerCell = 0;
+    const active = world.numParticles - counts[world.cellCount];
+    for (let i = 0; i < world.numParticles; i++) {
+      sum += den[8 * i + 3];
+      max = Math.max(max, den[8 * i + 3]);
+    }
+    for (let c = 0; c < world.cellCount; c++) maxPerCell = Math.max(maxPerCell, counts[c]);
+    return {
+      mean: sum / Math.max(active, 1) / world.targetDensity,
+      max: max / world.targetDensity,
+      maxPerCell, active,
+    };
+  }
+
+  async function timeMs(names, batch, reps) {
+    const WARMUP = 3;
+    const samples = [];
+    for (let r = 0; r < reps + WARMUP; r++) {
+      const enc = device.createCommandEncoder();
+      for (let s = 0; s < batch; s++) {
+        const pass = enc.beginComputePass();
+        encodePasses(pass, names);
+        pass.end();
+      }
+      const commands = enc.finish();
+      const t0 = performance.now();
+      device.queue.submit([commands]);
+      await device.queue.onSubmittedWorkDone();
+      if (r >= WARMUP) samples.push((performance.now() - t0) / batch);
+    }
+    samples.sort((a, b) => a - b);
+    return samples[samples.length >> 1];
+  }
+
+  // Render time per frame at a fixed resolution, into a texture of its own
+  // instead of the screen: the number then depends on neither window nor display.
+  const BENCH_VIEW = (query.get('view') ?? '1920x1080').split('x').map(Number);   // &view=3024x1800
+  async function renderMs(reps) {
+    setViewport(...BENCH_VIEW);
+    writeCamera();
+    const target = device.createTexture({
+      size: BENCH_VIEW, format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+    });
+    const FRAMES = 8, samples = [];
+    for (let r = 0; r < reps + 3; r++) {
+      const enc = device.createCommandEncoder();
+      for (let k = 0; k < FRAMES; k++) encodeRender(enc, target);
+      const commands = enc.finish();
+      const t0 = performance.now();
+      device.queue.submit([commands]);
+      await device.queue.onSubmittedWorkDone();
+      if (r >= 3) samples.push((performance.now() - t0) / FRAMES);
+    }
+    target.destroy();
+    samples.sort((a, b) => a - b);
+    return samples[samples.length >> 1];
+  }
+
+  async function runBench() {
+    const out = el('verify');
+    out.style.display = 'block';
+    const print = (line = '') => { out.textContent += line + '\n'; console.log(line); };
+    el('ui').style.pointerEvents = 'none';
+    canvas.style.pointerEvents = 'none';
+
+    const BATCH = 32, REPS = 12;
+    print(`Benchmark ${location.pathname} · 3D · h = ${H_RATIO} s · ms per substep `
+      + `(median of ${REPS} runs of ${BATCH} substeps)`);
+    print();
+    print('       N  Scenario    ' + BENCH_GROUPS.map(([label]) => label.padStart(9)).join('')
+      + '   in river    cells  rho/rho0 (mean, max)     max/cell  frame');
+    print('-'.repeat(22 + 9 * BENCH_GROUPS.length + 64));
+
+    // Start: fresh block in the trough, particles numbered in lattice order.
+    // shuffled: the same block, but numbered randomly. Same work, only
+    //   neighbours no longer sit next to each other in memory.
+    // river: start empty and let the source run until steady state is reached.
+    // compressed: block squeezed to half size (eight times the density).
+    const SETTLE_SECONDS = parseFloat(query.get('settle') ?? '12');
+    const SCENARIOS = [
+      { name: 'Start',       block: 'bed' },
+      { name: 'shuffled',    block: 'bed', shuffle: true },
+      { name: 'river',       settle: true },
+      { name: 'compressed',  block: 'bed', compress: 0.5 },
+    ];
+    // &only=river measures a single scenario
+    const chosen = SCENARIOS.filter((sc) => !query.has('only') || sc.name === query.get('only'));
+    const counts = query.has('n') ? query.get('n').split(',').map(Number) : [16384, 32768, 65536, 131072];
+    const results = [];
+    for (const N of counts) {
+      for (const { name, block, compress, settle = false, shuffle = false } of chosen) {
+        buildWorld(N, { block, compress, shuffle });
+        if (settle) await simulate(SETTLE_SECONDS);
+        fillParams(0, 0);
+        uploadParams();
+        const row = { N, name, cells: world.cellCount };
+        for (const [label, names] of BENCH_GROUPS) row[label] = await timeMs(names, BATCH, REPS);
+        row.density = await benchDensity();
+        if (settle) row.render = await renderMs(REPS);
+        results.push(row);
+        print(String(N).padStart(8) + '  ' + name.padEnd(12)
+          + BENCH_GROUPS.map(([label]) => row[label].toFixed(3).padStart(9)).join('')
+          + String(row.density.active).padStart(11) + String(row.cells).padStart(9)
+          + `${row.density.mean.toFixed(2).padStart(15)}${row.density.max.toFixed(2).padStart(7)}`
+          + String(row.density.maxPerCell).padStart(13)
+          + (row.render ? row.render.toFixed(2).padStart(7) : ''));
+      }
+    }
+    print();
+    print(`frame = ms per frame at ${BENCH_VIEW.join('x')}, without physics, `
+      + (pointsMode ? 'points' : `water surface (textures at ${FLUID_SCALE}x resolution)`)
+      + (BED_CACHE ? '' : ', bed re-rendered every frame'));
+    print('done');
+    window.__bench = results;
+  }
+
+  const report = (e) => {
+    el('verify').textContent += '\nAborted: ' + (e?.message ?? e);
+    console.error(e);
+  };
+  if (verifyMode) {
+    runVerify().catch(report);
+  } else if (benchMode) {
+    runBench().catch(report);
+  } else {
+    // ?warm=12 first computes that many seconds without rendering: the river is
+    // then already in steady state at the first frame.
+    if (query.has('warm')) await simulate(parseFloat(query.get('warm')));
+    last = performance.now();
+    requestAnimationFrame(frame);
+  }
+}
+
+function fail(detail) {
+  el('ui').style.display = 'none';
+  canvas.style.display = 'none';
+  el('fallback').style.display = 'flex';
+  el('fallback-detail').textContent = detail;
+  console.error('[sph]', detail);
+}
+
+main().catch((e) => fail(String(e?.message ?? e)));
+</script>
+</body>
+</html>

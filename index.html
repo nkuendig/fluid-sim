@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fluid-sim — SPH fluid simulation in WebGPU</title>
+<meta name="description" content="A stream of 65,536 particles, computed entirely on the GPU. SPH in WebGPU, a single HTML file with no dependencies.">
+<style>
+  :root {
+    --bg: #05070d;
+    --panel: rgba(12, 18, 32, 0.82);
+    --line: rgba(120, 170, 230, 0.18);
+    --text: #c9d8ee;
+    --dim: #8496b3;
+    --accent: #3fb4f0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  main { max-width: 680px; margin: 0 auto; padding: 56px 16px 72px; }
+  h1 {
+    margin: 0 0 6px; font-size: 15px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--accent); font-weight: 600;
+  }
+  .lead { margin: 0 0 28px; font-size: 19px; line-height: 1.45; color: #e3ecf8; }
+  h2 {
+    margin: 40px 0 10px; font-size: 12px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--dim); font-weight: 600;
+  }
+  p { margin: 0 0 12px; }
+  a { color: var(--accent); }
+  .start {
+    display: inline-block; padding: 11px 20px;
+    background: var(--accent); color: #04121c; font-weight: 600;
+    text-decoration: none; border-radius: 8px;
+  }
+  .start:hover { background: #6fc8f5; }
+  .note { margin-top: 12px; font-size: 13px; color: var(--dim); }
+  ul { margin: 0; padding-left: 20px; }
+  li { margin: 6px 0; }
+  code { color: #e3ecf8; background: rgba(255, 255, 255, 0.06); padding: 1px 5px; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>fluid-sim</h1>
+  <p class="lead">
+    A stream of 65,536 particles, computed entirely on the GPU.
+    SPH fluid simulation in WebGPU, a single HTML file with no dependencies.
+  </p>
+
+  <a class="start" href="fluid.html">Start the simulation</a>
+  <p class="note">
+    Needs WebGPU: Chrome or Edge 144+, Firefox 141+, Safari 26+.
+    The stream starts empty and fills up in about eight seconds.
+  </p>
+
+  <h2>What you see</h2>
+  <ul>
+    <li>Water flows from an inlet through a sloped channel, around three stones, and falls over the edge at the end.</li>
+    <li>Every particle that falls out at the bottom comes back in at the top. The particle count stays fixed.</li>
+    <li>The left mouse button pushes the water away, the right one pulls it in. The sliders change gravity, pressure, viscosity and inflow.</li>
+    <li>The “View” button switches between the smoothed water surface and the individual particles.</li>
+  </ul>
+
+  <h2>How it is computed</h2>
+  <ul>
+    <li>Smoothed Particle Hydrodynamics in 3D, every step a compute shader in WGSL.</li>
+    <li>Neighbour search on a grid with a counting sort; the particle data is reordered in memory every step.</li>
+    <li>The stream bed is a signed distance field and doubles as the collision geometry.</li>
+    <li>The water surface is built in screen space: particle depth, bilateral filter, normals from depth.</li>
+    <li>A second version of the same physics on the CPU checks the GPU step by step.</li>
+  </ul>
+
+  <h2>Things to try</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>Address</th><th>Purpose</th></tr>
+    <tr><td><a href="fluid.html?warm=12"><code>fluid.html?warm=12</code></a></td><td>The stream is already full on the first frame.</td></tr>
+    <tr><td><a href="fluid.html?points"><code>fluid.html?points</code></a></td><td>Starts in the particle view.</td></tr>
+    <tr><td><a href="fluid.html?bench"><code>fluid.html?bench</code></a></td><td>Measures milliseconds per physics step. Takes one to two minutes.</td></tr>
+    <tr><td><a href="fluid.html?verify"><code>fluid.html?verify</code></a></td><td>Compares the GPU with the CPU reference. Takes one to two minutes.</td></tr>
+    <tr><td><a href="fluid_2d.html"><code>fluid_2d.html</code></a></td><td>The earlier 2D version: a basin instead of a stream.</td></tr>
+  </table>
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SPH Fluid — WebGPU</title>
+<style>
+  :root {
+    --bg: #05070d;
+    --panel: rgba(12, 18, 32, 0.82);
+    --line: rgba(120, 170, 230, 0.18);
+    --text: #c9d8ee;
+    --dim: #6f84a3;
+    --accent: #3fb4f0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    overflow: hidden;
+  }
+  #c { display: block; width: 100vw; height: 100vh; cursor: crosshair; }
+
+  #ui {
+    position: fixed; top: 14px; left: 14px;
+    width: 268px; padding: 14px 16px 16px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    backdrop-filter: blur(14px);
+    user-select: none;
+  }
+  #ui h1 {
+    margin: 0 0 2px; font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--accent); font-weight: 600;
+  }
+  #ui .sub { margin: 0 0 12px; font-size: 11px; color: var(--dim); }
+  .row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
+  .row label { flex: 0 0 96px; font-size: 11px; color: var(--dim); }
+  .row input[type=range] { flex: 1; height: 16px; accent-color: var(--accent); }
+  .row output { flex: 0 0 44px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .divider { height: 1px; background: var(--line); margin: 12px 0 10px; }
+  select, button {
+    font: inherit; font-size: 11px; color: var(--text);
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 4px 8px; cursor: pointer;
+  }
+  button:hover, select:hover { background: rgba(63,180,240,0.14); }
+  #stats {
+    display: flex; gap: 14px; margin-top: 11px;
+    font-size: 11px; font-variant-numeric: tabular-nums; color: var(--dim);
+  }
+  #stats b { color: var(--text); font-weight: 600; }
+  .hint { margin-top: 10px; font-size: 10.5px; color: var(--dim); line-height: 1.45; }
+
+  #verify {
+    position: fixed; top: 14px; left: 296px; margin: 0; padding: 14px 16px;
+    display: none; max-width: calc(100vw - 310px); overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    font: inherit; font-size: 11.5px; white-space: pre;
+  }
+
+  #fallback {
+    position: fixed; inset: 0; display: none;
+    align-items: center; justify-content: center; padding: 32px;
+  }
+  #fallback div { max-width: 520px; }
+  #fallback h2 { color: var(--accent); font-size: 14px; letter-spacing: 0.1em; text-transform: uppercase; }
+  #fallback p { color: var(--dim); font-size: 12.5px; }
+  code { color: var(--accent); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <h1>SPH Fluid</h1>
+  <p class="sub">WebGPU compute · 2D · scaffold</p>
+
+  <div class="row">
+    <label for="gravity">Gravity</label>
+    <input type="range" id="gravity" min="0" max="30" step="0.5" value="8">
+    <output for="gravity"></output>
+  </div>
+  <div class="row">
+    <label for="pressure">Pressure</label>
+    <input type="range" id="pressure" min="0" max="6000" step="50" value="2000">
+    <output for="pressure"></output>
+  </div>
+  <div class="row">
+    <label for="nearp">Near pressure</label>
+    <input type="range" id="nearp" min="0" max="40" step="1" value="8">
+    <output for="nearp"></output>
+  </div>
+  <div class="row">
+    <label for="visc">Viscosity</label>
+    <input type="range" id="visc" min="0" max="60" step="1" value="20">
+    <output for="visc"></output>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="row">
+    <label for="count">Particles</label>
+    <select id="count">
+      <option value="4096">4 096</option>
+      <option value="8192">8 192</option>
+      <option value="16384" selected>16 384</option>
+      <option value="32768">32 768</option>
+      <option value="65536">65 536</option>
+    </select>
+    <button id="reset">Reset</button>
+  </div>
+
+  <div id="stats">
+    <span>fps <b id="fps">–</b></span>
+    <span>n <b id="n">–</b></span>
+    <span>ms <b id="ms">–</b></span>
+    <span>sub <b id="sub">–</b></span>
+  </div>
+
+  <p class="hint">
+    Left mouse button pushes, right one pulls.
+    <b>sub</b> is the number of physics steps per frame: higher pressure
+    needs more of them. When it turns orange, the maximum is no longer
+    enough and the simulation becomes inaccurate.
+  </p>
+</div>
+
+<pre id="verify"></pre>
+
+<div id="fallback">
+  <div>
+    <h2>No WebGPU</h2>
+    <p>
+      This browser does not provide <code>navigator.gpu</code>. WebGPU is on by
+      default in Chrome/Edge 144+, Firefox 141+ (Windows, Apple silicon macOS)
+      and Safari 26. On Linux with Firefox it is usually still missing.
+    </p>
+    <p id="fallback-detail"></p>
+  </div>
+</div>
+
+<script type="module">
+const PI = Math.PI;
+
+// ───────────────────────────────────────────────────────────── Shader
+const SHADER = /* wgsl */`
+struct Params {
+  numParticles   : u32,
+  gridWidth      : u32,
+  gridHeight     : u32,
+  maxPerCell     : u32,
+  dt             : f32,
+  gravity        : f32,
+  h              : f32,
+  targetDensity  : f32,
+  pressureK      : f32,
+  nearPressureK  : f32,
+  viscosity      : f32,
+  mass           : f32,
+  boundsMin      : vec2f,
+  boundsMax      : vec2f,
+  mousePos       : vec2f,
+  mouseRadius    : f32,
+  mouseStrength  : f32,
+  damping        : f32,
+  particleRadius : f32,
+  maxSpeed       : f32,
+  _pad           : f32,
+}
+
+@group(0) @binding(0) var<uniform> P : Params;
+@group(0) @binding(1) var<storage, read_write> positions     : array<vec2f>;
+@group(0) @binding(2) var<storage, read_write> velocities    : array<vec2f>;
+@group(0) @binding(3) var<storage, read_write> predicted     : array<vec2f>;
+@group(0) @binding(4) var<storage, read_write> densities     : array<vec2f>;
+@group(0) @binding(5) var<storage, read_write> cellCounts    : array<atomic<u32>>;
+@group(0) @binding(6) var<storage, read_write> cellParticles : array<u32>;
+
+// ── Kernels (2D, normalised: integral over the disc = 1)
+fn W2(d: f32) -> f32 {
+  if (d >= P.h) { return 0.0; }
+  let v = P.h - d;
+  return v * v * 6.0 / (${PI} * pow(P.h, 4.0));
+}
+fn dW2(d: f32) -> f32 {
+  if (d >= P.h) { return 0.0; }
+  let v = P.h - d;
+  return -v * 12.0 / (${PI} * pow(P.h, 4.0));
+}
+fn W3(d: f32) -> f32 {
+  if (d >= P.h) { return 0.0; }
+  let v = P.h - d;
+  return v * v * v * 10.0 / (${PI} * pow(P.h, 5.0));
+}
+fn dW3(d: f32) -> f32 {
+  if (d >= P.h) { return 0.0; }
+  let v = P.h - d;
+  return -v * v * 30.0 / (${PI} * pow(P.h, 5.0));
+}
+fn Wvisc(d: f32) -> f32 {
+  if (d >= P.h) { return 0.0; }
+  let v = P.h * P.h - d * d;
+  return v * v * v * 4.0 / (${PI} * pow(P.h, 8.0));
+}
+
+// ── Uniform grid for the neighbour search
+fn cellCoord(p: vec2f) -> vec2i {
+  return vec2i(floor((p - P.boundsMin) / P.h));
+}
+fn inGrid(c: vec2i) -> bool {
+  return c.x >= 0 && c.y >= 0
+      && u32(c.x) < P.gridWidth && u32(c.y) < P.gridHeight;
+}
+fn cellIndex(c: vec2i) -> u32 {
+  return u32(c.y) * P.gridWidth + u32(c.x);
+}
+
+// ── Pass 1: external forces + position prediction
+@compute @workgroup_size(64)
+fn externalForces(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= P.numParticles) { return; }
+
+  var v = velocities[i];
+  v.y -= P.gravity * P.dt;
+
+  if (P.mouseStrength != 0.0) {
+    let off  = P.mousePos - positions[i];
+    let dist = length(off);
+    if (dist < P.mouseRadius && dist > 1e-5) {
+      let t   = 1.0 - dist / P.mouseRadius;
+      let dir = off / dist;
+      v += dir * P.mouseStrength * t * P.dt;
+      v *= 1.0 - 0.12 * t;
+    }
+  }
+
+  velocities[i] = v;
+  predicted[i]  = positions[i] + v * P.dt;
+}
+
+// ── Pass 2: clear the grid
+@compute @workgroup_size(64)
+fn clearGrid(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x >= P.gridWidth * P.gridHeight) { return; }
+  atomicStore(&cellCounts[gid.x], 0u);
+}
+
+// ── Pass 3: fill the grid
+@compute @workgroup_size(64)
+fn buildGrid(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= P.numParticles) { return; }
+
+  let c = cellCoord(predicted[i]);
+  if (!inGrid(c)) { return; }
+
+  let ci   = cellIndex(c);
+  let slot = atomicAdd(&cellCounts[ci], 1u);
+  if (slot < P.maxPerCell) {
+    cellParticles[ci * P.maxPerCell + slot] = i;
+  }
+}
+
+// ── Pass 4: density and near density
+@compute @workgroup_size(64)
+fn computeDensity(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= P.numParticles) { return; }
+
+  let pi = predicted[i];
+  let c  = cellCoord(pi);
+  var dens = 0.0;
+  var near = 0.0;
+
+  for (var dy = -1; dy <= 1; dy++) {
+    for (var dx = -1; dx <= 1; dx++) {
+      let cc = c + vec2i(dx, dy);
+      if (!inGrid(cc)) { continue; }
+      let ci    = cellIndex(cc);
+      let count = min(atomicLoad(&cellCounts[ci]), P.maxPerCell);
+      for (var k = 0u; k < count; k++) {
+        let j = cellParticles[ci * P.maxPerCell + k];
+        let d = distance(pi, predicted[j]);
+        dens += P.mass * W2(d);
+        near += P.mass * W3(d);
+      }
+    }
+  }
+  densities[i] = vec2f(dens, near);
+}
+
+fn pressureOf(d: f32) -> f32 {
+  return (d - P.targetDensity) * P.pressureK;
+}
+
+// ── Pass 5: pressure and viscosity forces
+@compute @workgroup_size(64)
+fn computeForces(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= P.numParticles) { return; }
+
+  let di = densities[i];
+  if (di.x <= 1e-6) { return; }
+
+  let pi        = predicted[i];
+  let vi        = velocities[i];
+  let pressI    = pressureOf(di.x);
+  let nearI     = di.y * P.nearPressureK;
+  var accel     = vec2f(0.0);
+  var viscAccum = vec2f(0.0);
+  let c         = cellCoord(pi);
+
+  for (var dy = -1; dy <= 1; dy++) {
+    for (var dx = -1; dx <= 1; dx++) {
+      let cc = c + vec2i(dx, dy);
+      if (!inGrid(cc)) { continue; }
+      let ci    = cellIndex(cc);
+      let count = min(atomicLoad(&cellCounts[ci]), P.maxPerCell);
+
+      for (var k = 0u; k < count; k++) {
+        let j = cellParticles[ci * P.maxPerCell + k];
+        if (j == i) { continue; }
+
+        let off = predicted[j] - pi;
+        let d   = length(off);
+        if (d >= P.h) { continue; }
+
+        // direction i -> j; arbitrary but deterministic if the two coincide
+        var dir = vec2f(0.0, 1.0);
+        if (d > 1e-6) { dir = off / d; }
+
+        let dj = densities[j];
+        if (dj.x <= 1e-6) { continue; }
+
+        let pressJ = pressureOf(dj.x);
+        let nearJ  = dj.y * P.nearPressureK;
+
+        // Momentum-conserving form: the bracket is antisymmetric in i and j, so the
+        // force of i on j is exactly the negative of the force of j on i.
+        // The asymmetric variant (divided by dj only) violates that and keeps
+        // pumping energy into the system at free surfaces.
+        // dW2 < 0, so at excess density i is pushed away from j.
+        accel += dir * dW2(d) * P.mass
+               * (pressI / (di.x * di.x) + pressJ / (dj.x * dj.x));
+        accel += dir * dW3(d) * P.mass
+               * (nearI / max(di.y * di.y, 1e-6) + nearJ / max(dj.y * dj.y, 1e-6));
+
+        viscAccum += (velocities[j] - vi) * Wvisc(d);
+      }
+    }
+  }
+
+  var v = vi + accel * P.dt + viscAccum * P.viscosity * P.dt;
+  let sp = length(v);
+  if (sp > P.maxSpeed) { v = v * (P.maxSpeed / sp); }
+  velocities[i] = v;
+}
+
+// ── Pass 6: integration and boundary conditions
+@compute @workgroup_size(64)
+fn integrate(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= P.numParticles) { return; }
+
+  var p = positions[i];
+  var v = velocities[i];
+  p += v * P.dt;
+
+  let r  = P.particleRadius;
+  let lo = P.boundsMin + vec2f(r, r);
+  let hi = P.boundsMax - vec2f(r, r);
+
+  if (p.x < lo.x) { p.x = lo.x; v.x = -v.x * P.damping; }
+  if (p.x > hi.x) { p.x = hi.x; v.x = -v.x * P.damping; }
+  if (p.y < lo.y) { p.y = lo.y; v.y = -v.y * P.damping; }
+  if (p.y > hi.y) { p.y = hi.y; v.y = -v.y * P.damping; }
+
+  positions[i]  = p;
+  velocities[i] = v;
+}
+`;
+
+const RENDER_SHADER = /* wgsl */`
+struct Params {
+  numParticles   : u32,
+  gridWidth      : u32,
+  gridHeight     : u32,
+  maxPerCell     : u32,
+  dt             : f32,
+  gravity        : f32,
+  h              : f32,
+  targetDensity  : f32,
+  pressureK      : f32,
+  nearPressureK  : f32,
+  viscosity      : f32,
+  mass           : f32,
+  boundsMin      : vec2f,
+  boundsMax      : vec2f,
+  mousePos       : vec2f,
+  mouseRadius    : f32,
+  mouseStrength  : f32,
+  damping        : f32,
+  particleRadius : f32,
+  maxSpeed       : f32,
+  _pad           : f32,
+}
+
+@group(0) @binding(0) var<uniform> P : Params;
+@group(0) @binding(1) var<storage, read> positions  : array<vec2f>;
+@group(0) @binding(2) var<storage, read> velocities : array<vec2f>;
+
+struct VSOut {
+  @builtin(position) pos   : vec4f,
+  @location(0)       uv    : vec2f,
+  @location(1)       speed : f32,
+}
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32,
+      @builtin(instance_index) ii: u32) -> VSOut {
+  var quad = array<vec2f, 6>(
+    vec2f(-1.0, -1.0), vec2f( 1.0, -1.0), vec2f(-1.0,  1.0),
+    vec2f(-1.0,  1.0), vec2f( 1.0, -1.0), vec2f( 1.0,  1.0)
+  );
+  let corner = quad[vi];
+  let wp     = positions[ii] + corner * P.particleRadius * 2.4;
+  let span   = P.boundsMax - P.boundsMin;
+  let ndc    = (wp - P.boundsMin) / span * 2.0 - vec2f(1.0, 1.0);
+
+  var o: VSOut;
+  o.pos   = vec4f(ndc, 0.0, 1.0);
+  o.uv    = corner;
+  o.speed = length(velocities[ii]);
+  return o;
+}
+
+fn palette(t: f32) -> vec3f {
+  let c1 = vec3f(0.04, 0.13, 0.42);
+  let c2 = vec3f(0.12, 0.62, 0.94);
+  let c3 = vec3f(0.86, 0.98, 1.00);
+  if (t < 0.5) { return mix(c1, c2, t * 2.0); }
+  return mix(c2, c3, (t - 0.5) * 2.0);
+}
+
+@fragment
+fn fs(frag: VSOut) -> @location(0) vec4f {
+  let r2 = dot(frag.uv, frag.uv);
+  if (r2 > 1.0) { discard; }
+  let a = smoothstep(1.0, 0.2, r2);
+  let t = clamp(frag.speed / 6.0, 0.0, 1.0);
+  return vec4f(palette(t), a * 0.9);
+}
+`;
+
+// ────────────────────────────────────────────────────────── Constants
+const PARAMS_BYTES   = 96;   // 24 x 4 bytes, 16-byte aligned
+const WORKGROUP      = 64;
+const MAX_PER_CELL   = 48;
+const MAX_SUBSTEPS   = 16;
+const DOMAIN_HEIGHT  = 10.0;
+
+const el = (id) => document.getElementById(id);
+const canvas = el('c');
+
+// ─────────────────────────────────────── Rest density on the lattice
+// We sum the kernel over a perfect lattice with the spawn spacing.
+// That way targetDensity need not be guessed.
+function restDensity(h, spacing, mass) {
+  let sum = 0;
+  const R = Math.ceil(h / spacing);
+  for (let y = -R; y <= R; y++) {
+    for (let x = -R; x <= R; x++) {
+      const d = Math.hypot(x * spacing, y * spacing);
+      if (d < h) sum += mass * (h - d) * (h - d) * 6 / (PI * h ** 4);
+    }
+  }
+  return sum;
+}
+
+// ───────────────────────────────────────────────────────────── Setup
+async function main() {
+  if (!navigator.gpu) return fail('navigator.gpu is missing.');
+
+  let adapter;
+  try {
+    adapter = await navigator.gpu.requestAdapter();
+  } catch (e) {
+    return fail(String(e));
+  }
+  if (!adapter) {
+    return fail('No GPU adapter. Driver too old, GPU too weak, or blocked by policy.');
+  }
+
+  const device = await adapter.requestDevice();
+  device.addEventListener?.('uncapturederror', (ev) => {
+    console.error('[WebGPU]', ev.error?.message ?? ev.error);
+  });
+
+  const ctx    = canvas.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device, format, alphaMode: 'opaque' });
+
+  const computeModule = device.createShaderModule({ code: SHADER, label: 'sph-compute' });
+  const renderModule  = device.createShaderModule({ code: RENDER_SHADER, label: 'sph-render' });
+
+  // Show compile errors instead of a black screen
+  for (const [name, mod] of [['compute', computeModule], ['render', renderModule]]) {
+    const info = await mod.getCompilationInfo();
+    const errs = info.messages.filter((m) => m.type === 'error');
+    if (errs.length) {
+      console.error(`WGSL (${name}):`, errs);
+      return fail(`WGSL error in ${name}: ${errs[0].message} (line ${errs[0].lineNum})`);
+    }
+  }
+
+  const computeBGL = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      ...[1, 2, 3, 4, 5, 6].map((binding) => ({
+        binding, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' },
+      })),
+    ],
+  });
+
+  const renderBGL = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+      { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+    ],
+  });
+
+  const computeLayout = device.createPipelineLayout({ bindGroupLayouts: [computeBGL] });
+  const renderLayout  = device.createPipelineLayout({ bindGroupLayouts: [renderBGL] });
+
+  const PASSES = ['externalForces', 'clearGrid', 'buildGrid',
+                  'computeDensity', 'computeForces', 'integrate'];
+  const pipelines = {};
+  for (const entryPoint of PASSES) {
+    pipelines[entryPoint] = device.createComputePipeline({
+      layout: computeLayout,
+      compute: { module: computeModule, entryPoint },
+    });
+  }
+
+  const renderPipeline = device.createRenderPipeline({
+    layout: renderLayout,
+    vertex:   { module: renderModule, entryPoint: 'vs' },
+    fragment: {
+      module: renderModule, entryPoint: 'fs',
+      targets: [{
+        format,
+        blend: {
+          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          alpha: { srcFactor: 'one',       dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        },
+      }],
+    },
+    primitive: { topology: 'triangle-list' },
+  });
+
+  // ─────────────────────────────────────────────────── World state
+  const paramsBuffer = device.createBuffer({
+    size: PARAMS_BYTES,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const paramsHost = new ArrayBuffer(PARAMS_BYTES);
+  const pu32 = new Uint32Array(paramsHost);
+  const pf32 = new Float32Array(paramsHost);
+
+  let world = null;   // everything that depends on particle count / canvas size
+
+  // Benchmark only: compress < 1 squeezes the start block together,
+  // shuffle renumbers the particles randomly (same positions, different order).
+  function buildWorld(numParticles, compress = 1, shuffle = false) {
+    world?.buffers.forEach((b) => b.destroy());
+
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    canvas.width  = Math.max(1, Math.floor(canvas.clientWidth  * dpr));
+    canvas.height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+
+    // The benchmark always uses 16:9 so it does not depend on the window size.
+    const aspect = benchMode ? 16 / 9 : canvas.width / canvas.height;
+    const boundsMin = [-DOMAIN_HEIGHT * aspect / 2, -DOMAIN_HEIGHT / 2];
+    const boundsMax = [ DOMAIN_HEIGHT * aspect / 2,  DOMAIN_HEIGHT / 2];
+
+    // Spawn block: half the domain width, centred
+    const blockW = (boundsMax[0] - boundsMin[0]) * 0.5;
+    const blockH = DOMAIN_HEIGHT * 0.62;
+    const cols   = Math.max(1, Math.round(Math.sqrt(numParticles * blockW / blockH)));
+    const rows   = Math.ceil(numParticles / cols);
+    const spacing = Math.min(blockW / cols, blockH / rows);
+
+    const h    = spacing * 2.8;
+    const mass = 1.0;
+    const targetDensity = restDensity(h, spacing, mass);
+
+    const gridWidth  = Math.max(1, Math.ceil((boundsMax[0] - boundsMin[0]) / h));
+    const gridHeight = Math.max(1, Math.ceil((boundsMax[1] - boundsMin[1]) / h));
+    const cellCount  = gridWidth * gridHeight;
+
+    // Start positions: lattice with slight jitter so it does not stay crystalline
+    const pos = new Float32Array(numParticles * 2);
+    const x0 = -blockW / 2, y0 = -blockH / 2;
+    for (let i = 0; i < numParticles; i++) {
+      const cx = i % cols, cy = Math.floor(i / cols);
+      pos[i * 2]     = (x0 + (cx + 0.5) * spacing + (Math.random() - 0.5) * spacing * 0.25) * compress;
+      pos[i * 2 + 1] = (y0 + (cy + 0.5) * spacing + (Math.random() - 0.5) * spacing * 0.25) * compress;
+    }
+
+    if (shuffle) {
+      for (let i = numParticles - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        for (const k of [0, 1]) {
+          const t = pos[i * 2 + k]; pos[i * 2 + k] = pos[j * 2 + k]; pos[j * 2 + k] = t;
+        }
+      }
+    }
+
+    const mk = (size, extra = 0) => device.createBuffer({
+      size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | extra,
+    });
+
+    const positions     = mk(numParticles * 8);
+    const velocities    = mk(numParticles * 8);
+    const predicted     = mk(numParticles * 8);
+    const densities     = mk(numParticles * 8);
+    const cellCounts    = mk(cellCount * 4);
+    const cellParticles = mk(cellCount * MAX_PER_CELL * 4);
+
+    device.queue.writeBuffer(positions, 0, pos);
+    device.queue.writeBuffer(velocities, 0, new Float32Array(numParticles * 2));
+
+    const buffers = [positions, velocities, predicted, densities, cellCounts, cellParticles];
+
+    const computeBindGroup = device.createBindGroup({
+      layout: computeBGL,
+      entries: [
+        { binding: 0, resource: { buffer: paramsBuffer } },
+        ...buffers.map((buffer, k) => ({ binding: k + 1, resource: { buffer } })),
+      ],
+    });
+
+    const renderBindGroup = device.createBindGroup({
+      layout: renderBGL,
+      entries: [
+        { binding: 0, resource: { buffer: paramsBuffer } },
+        { binding: 1, resource: { buffer: positions } },
+        { binding: 2, resource: { buffer: velocities } },
+      ],
+    });
+
+    world = {
+      numParticles, h, mass, spacing, targetDensity,
+      gridWidth, gridHeight, cellCount,
+      boundsMin, boundsMax,
+      particleRadius: spacing * 0.42,
+      buffers, computeBindGroup, renderBindGroup,
+    };
+
+    el('n').textContent = numParticles.toLocaleString('en-US');
+    console.log('[sph]', {
+      numParticles, spacing: +spacing.toFixed(4), h: +h.toFixed(4),
+      targetDensity: +targetDensity.toFixed(2), grid: `${gridWidth}x${gridHeight}`,
+    });
+  }
+
+  // ──────────────────────────────────────────────────── Interaction
+  const mouse = { x: 0, y: 0, strength: 0 };
+  const MOUSE_RADIUS = 1.8;
+  const PUSH = 220;
+
+  function toWorld(ev) {
+    const r = canvas.getBoundingClientRect();
+    const u = (ev.clientX - r.left) / r.width;
+    const v = (ev.clientY - r.top) / r.height;
+    const [ax, ay] = world.boundsMin;
+    const [bx, by] = world.boundsMax;
+    return [ax + u * (bx - ax), by - v * (by - ay)];
+  }
+
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('pointerdown', (ev) => {
+    canvas.setPointerCapture(ev.pointerId);
+    [mouse.x, mouse.y] = toWorld(ev);
+    mouse.strength = ev.button === 2 ? PUSH : -PUSH;
+  });
+  canvas.addEventListener('pointermove', (ev) => {
+    [mouse.x, mouse.y] = toWorld(ev);
+  });
+  const release = () => { mouse.strength = 0; };
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointercancel', release);
+  canvas.addEventListener('pointerleave', release);
+
+  // ─────────────────────────────────────────────────────── Sliders
+  const sliders = {
+    gravity: el('gravity'), pressure: el('pressure'),
+    nearp:   el('nearp'),   visc:     el('visc'),
+  };
+  function syncOutputs() {
+    for (const [name, input] of Object.entries(sliders)) {
+      const out = document.querySelector(`output[for="${name}"]`);
+      const step = parseFloat(input.step);
+      const digits = Math.max(0, -Math.floor(Math.log10(step)));
+      out.textContent = parseFloat(input.value).toFixed(digits);
+    }
+  }
+  Object.values(sliders).forEach((s) => s.addEventListener('input', syncOutputs));
+  syncOutputs();
+
+  el('reset').addEventListener('click', () => buildWorld(world.numParticles));
+  el('count').addEventListener('change', (ev) => buildWorld(parseInt(ev.target.value, 10)));
+
+  const benchMode = new URLSearchParams(location.search).has('bench');
+
+  let resizeTimer;
+  addEventListener('resize', () => {
+    if (benchMode) return;   // the benchmark builds its own worlds
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => buildWorld(world.numParticles), 160);
+  });
+
+  buildWorld(parseInt(el('count').value, 10));
+
+  // ────────────────────────────────────────────── Parameter upload
+
+  // The sliders are scale-invariant: a value means the same no matter how many
+  // particles are selected. In the momentum-conserving form
+  //   acceleration ~ 2 * k * (dRho / rho0) / h,
+  // so k = slider * h / 2 turns the slider value itself into an acceleration:
+  // "pressure 2000" means 100% compression produces about 2000 units of
+  // counter-acceleration — directly comparable to gravity.
+  const stiffness = (slider) => parseFloat(slider.value) * world.h / 2;
+
+  // CFL condition. The speed of sound in the fluid is sqrt(k); a time step in
+  // which a pressure wave travels further than one smoothing length blows up.
+  // So the number of substeps follows the stiffness, instead of capping the
+  // stiffness.
+  function timestep(frameDt) {
+    const c = Math.sqrt(Math.max(stiffness(sliders.pressure), 1e-9));
+    const dtMax = Math.min(1 / 120, 0.25 * world.h / (c + 4));
+    const substeps = Math.max(1, Math.min(MAX_SUBSTEPS, Math.ceil(frameDt / dtMax)));
+    return { substeps, dt: frameDt / substeps, limited: frameDt / substeps > dtMax };
+  }
+
+  function writeParams(dt) {
+    const w = world;
+    pu32[0] = w.numParticles;
+    pu32[1] = w.gridWidth;
+    pu32[2] = w.gridHeight;
+    pu32[3] = MAX_PER_CELL;
+    pf32[4] = dt;
+    pf32[5] = parseFloat(sliders.gravity.value);
+    pf32[6] = w.h;
+    pf32[7] = w.targetDensity;
+    pf32[8] = stiffness(sliders.pressure);
+    pf32[9] = stiffness(sliders.nearp);
+    pf32[10] = parseFloat(sliders.visc.value) * w.spacing * w.spacing;
+    pf32[11] = w.mass;
+    pf32[12] = w.boundsMin[0];
+    pf32[13] = w.boundsMin[1];
+    pf32[14] = w.boundsMax[0];
+    pf32[15] = w.boundsMax[1];
+    pf32[16] = mouse.x;
+    pf32[17] = mouse.y;
+    pf32[18] = MOUSE_RADIUS;
+    pf32[19] = mouse.strength;
+    pf32[20] = 0.15;              // wall damping (bouncy walls keep the sloshing alive)
+    pf32[21] = w.particleRadius;
+    pf32[22] = 30.0;              // velocity cap (stability net)
+    device.queue.writeBuffer(paramsBuffer, 0, paramsHost);
+  }
+
+  // ─────────────────────────────────────────────────────────── Loop
+  const groups = (n) => Math.ceil(n / WORKGROUP);
+  let last = performance.now();
+  let fpsAccum = 0, fpsFrames = 0, msAccum = 0;
+
+  function frame(now) {
+    const wall = now - last;
+    last = now;
+
+    const t0 = performance.now();
+    // Real frame time instead of a fixed 1/60 s. Otherwise the simulation advances
+    // by 1/60 s per frame no matter how fast frames arrive — on a 120 Hz display
+    // it would run twice as fast as real time. Capped so that a hitch does not
+    // blow up the physics.
+    const frameDt = Math.min(Math.max(wall / 1000, 1 / 240), 1 / 30);
+    const { substeps, dt, limited } = timestep(frameDt);
+    writeParams(dt);
+
+    const enc = device.createCommandEncoder();
+
+    for (let s = 0; s < substeps; s++) {
+      const pass = enc.beginComputePass();
+      pass.setBindGroup(0, world.computeBindGroup);
+      for (const name of PASSES) {
+        pass.setPipeline(pipelines[name]);
+        pass.dispatchWorkgroups(
+          groups(name === 'clearGrid' ? world.cellCount : world.numParticles)
+        );
+      }
+      pass.end();
+    }
+
+    const view = ctx.getCurrentTexture().createView();
+    const rp = enc.beginRenderPass({
+      colorAttachments: [{
+        view, loadOp: 'clear', storeOp: 'store',
+        clearValue: { r: 0.02, g: 0.027, b: 0.051, a: 1 },
+      }],
+    });
+    rp.setPipeline(renderPipeline);
+    rp.setBindGroup(0, world.renderBindGroup);
+    rp.draw(6, world.numParticles);
+    rp.end();
+
+    device.queue.submit([enc.finish()]);
+
+    msAccum += performance.now() - t0;
+    fpsAccum += wall; fpsFrames++;
+    if (fpsAccum >= 500) {
+      el('fps').textContent = (1000 * fpsFrames / fpsAccum).toFixed(0);
+      el('ms').textContent  = (msAccum / fpsFrames).toFixed(2);
+      el('sub').textContent = substeps + (limited ? '!' : '');
+      el('sub').style.color = limited ? '#e07a5f' : '';
+      fpsAccum = 0; fpsFrames = 0; msAccum = 0;
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ──────────────────────────────────────────────────── Benchmark
+  // fluid_before.html?bench: the same measuring code as in fluid.html, so that
+  // before and after are measured the same way. The simulation itself is unchanged.
+  function encodePasses(pass, names) {
+    pass.setBindGroup(0, world.computeBindGroup);
+    for (const name of names) {
+      pass.setPipeline(pipelines[name]);
+      pass.dispatchWorkgroups(
+        groups(name === 'clearGrid' ? world.cellCount : world.numParticles)
+      );
+    }
+  }
+  const benchDensity = null;   // density readback exists only in fluid.html
+  const BENCH_GROUPS = [
+    ['Total',   PASSES],
+    ['Grid',    ['clearGrid', 'buildGrid']],
+    ['Density', ['computeDensity']],
+    ['Forces',  ['computeForces']],
+  ];
+
+  async function timeMs(names, batch, reps) {
+    const WARMUP = 3;
+    const samples = [];
+    for (let r = 0; r < reps + WARMUP; r++) {
+      const enc = device.createCommandEncoder();
+      for (let s = 0; s < batch; s++) {
+        const pass = enc.beginComputePass();
+        encodePasses(pass, names);
+        pass.end();
+      }
+      const commands = enc.finish();
+      const t0 = performance.now();
+      device.queue.submit([commands]);
+      await device.queue.onSubmittedWorkDone();
+      if (r >= WARMUP) samples.push((performance.now() - t0) / batch);
+    }
+    samples.sort((a, b) => a - b);
+    return samples[samples.length >> 1];
+  }
+
+  async function runBench() {
+    const out = el('verify');
+    out.style.display = 'block';
+    const print = (line = '') => { out.textContent += line + '\n'; console.log(line); };
+    el('ui').style.pointerEvents = 'none';
+    canvas.style.pointerEvents = 'none';
+
+    const BATCH = 32, REPS = 12;
+    print(`Benchmark ${location.pathname} · ms per substep (median of ${REPS} runs of ${BATCH} substeps)`);
+    print();
+    print('       N  Scenario    ' + BENCH_GROUPS.map(([label]) => label.padStart(9)).join('')
+      + (benchDensity ? '  rho/rho0 (mean, max)       max/cell' : ''));
+    print('-'.repeat(22 + 9 * BENCH_GROUPS.length + (benchDensity ? 37 : 0)));
+
+    // Start: the fresh block, particles numbered in lattice order.
+    // shuffled: the same block, but numbered randomly. Same work, only
+    //   neighbours no longer sit next to each other in memory.
+    // basin: run 6 simulated seconds until the water has settled at the bottom.
+    // compressed: block squeezed to a third.
+    const SETTLE_SECONDS = 6;
+    const SCENARIOS = [
+      { name: 'Start',       compress: 1 },
+      { name: 'shuffled',    compress: 1,    shuffle: true },
+      { name: 'basin',       compress: 1,    settle: true },
+      { name: 'compressed',  compress: 0.35 },
+    ];
+    const results = [];
+    for (const N of [16384, 32768, 65536]) {
+      for (const { name, compress, settle = false, shuffle = false } of SCENARIOS) {
+        buildWorld(N, compress, shuffle);
+        if (settle) {
+          const dt = timestep(1 / 240).dt;
+          writeParams(dt);
+          for (let left = Math.ceil(SETTLE_SECONDS / dt); left > 0; left -= 64) {
+            const enc = device.createCommandEncoder();
+            for (let s = 0; s < Math.min(64, left); s++) {
+              const pass = enc.beginComputePass();
+              encodePasses(pass, BENCH_GROUPS[0][1]);
+              pass.end();
+            }
+            device.queue.submit([enc.finish()]);
+            await device.queue.onSubmittedWorkDone();
+          }
+        }
+        writeParams(0);
+        const row = { N, name };
+        for (const [label, names] of BENCH_GROUPS) row[label] = await timeMs(names, BATCH, REPS);
+        if (benchDensity) row.density = await benchDensity();
+        results.push(row);
+        print(String(N).padStart(8) + '  ' + name.padEnd(12)
+          + BENCH_GROUPS.map(([label]) => row[label].toFixed(3).padStart(9)).join('')
+          + (row.density
+            ? `${row.density.mean.toFixed(2).padStart(15)}${row.density.max.toFixed(2).padStart(7)}`
+              + String(row.density.maxPerCell).padStart(15)
+            : ''));
+      }
+    }
+    print();
+    print('done');
+    window.__bench = results;
+  }
+
+  if (benchMode) {
+    runBench().catch((e) => {
+      el('verify').textContent += '\nAborted: ' + (e?.message ?? e);
+      console.error(e);
+    });
+  } else {
+    requestAnimationFrame(frame);
+  }
+}
+
+function fail(detail) {
+  el('ui').style.display = 'none';
+  canvas.style.display = 'none';
+  el('fallback').style.display = 'flex';
+  el('fallback-detail').textContent = detail;
+  console.error('[sph]', detail);
+}
+
+main().catch((e) => fail(String(e?.message ?? e)));
+</script>
+</body>
+</html>
